@@ -1,0 +1,221 @@
+Capture Baseline Traffic with tcpdump, Enrich with Zeek
+Learning Objectives
+By completing this lab, you will:
+
+Install and configure tcpdump for network traffic capture
+Deploy Zeek for advanced network traffic analysis
+Capture baseline network traffic using both tools
+Analyze captured data to establish network behavior patterns
+Compare raw packet data with enriched Zeek logs
+Prerequisites
+Basic Linux command line knowledge
+Understanding of network protocols (TCP/IP, HTTP, DNS)
+Familiarity with log file analysis
+Root or sudo access on the Linux machine
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required software during the lab exercises.
+
+Task 1: Install and Configure Required Tools
+Subtask 1.1: Update System and Install tcpdump
+# Update package repositories
+sudo apt update
+
+# Install tcpdump
+sudo apt install -y tcpdump
+
+# Verify installation
+tcpdump --version
+Subtask 1.2: Install Zeek
+# Install dependencies
+sudo apt install -y curl gnupg2 software-properties-common
+
+# Add Zeek repository
+echo 'deb http://download.opensuse.org/repositories/security:/zeek/xUbuntu_20.04/ /' | sudo tee /etc/apt/sources.list.d/security:zeek.list
+
+# Add repository key
+curl -fsSL https://download.opensuse.org/repositories/security:zeek/xUbuntu_20.04/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/security_zeek.gpg > /dev/null
+
+# Update and install Zeek
+sudo apt update
+sudo apt install -y zeek
+
+# Add Zeek to PATH
+echo 'export PATH=/opt/zeek/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+/opt/zeek/bin/zeek --version
+Subtask 1.3: Create Working Directory
+# Create lab directory
+mkdir ~/network_baseline_lab
+cd ~/network_baseline_lab
+
+# Create subdirectories for organization
+mkdir tcpdump_captures zeek_logs analysis
+Task 2: Capture Network Traffic with tcpdump
+Subtask 2.1: Identify Network Interface
+# List available network interfaces
+ip link show
+
+# Check interface with active connection
+ip route | grep default
+Subtask 2.2: Start tcpdump Capture
+# Start tcpdump capture (replace eth0 with your interface)
+sudo tcpdump -i eth0 -w ~/network_baseline_lab/tcpdump_captures/baseline_traffic.pcap -s 65535 &
+
+# Note the process ID for later termination
+TCPDUMP_PID=$!
+echo "tcpdump PID: $TCPDUMP_PID"
+Subtask 2.3: Generate Network Activity
+# Generate various types of network traffic for baseline
+ping -c 5 google.com
+curl -s http://httpbin.org/get > /dev/null
+nslookup github.com
+wget -q -O /dev/null http://httpbin.org/json
+
+# Let capture run for 2 minutes
+sleep 120
+Subtask 2.4: Stop tcpdump Capture
+# Stop tcpdump process
+sudo kill $TCPDUMP_PID
+
+# Verify capture file
+ls -lh ~/network_baseline_lab/tcpdump_captures/
+Task 3: Analyze Traffic with Zeek
+Subtask 3.1: Process Capture with Zeek
+# Navigate to Zeek logs directory
+cd ~/network_baseline_lab/zeek_logs
+
+# Process the pcap file with Zeek
+/opt/zeek/bin/zeek -r ../tcpdump_captures/baseline_traffic.pcap
+
+# List generated log files
+ls -la *.log
+Subtask 3.2: Examine Zeek Log Files
+# View connection summary
+head -20 conn.log
+
+# Check DNS queries
+head -10 dns.log
+
+# Review HTTP traffic
+head -10 http.log
+
+# Check detected files
+head -10 files.log
+Task 4: Analyze Baseline Traffic Patterns
+Subtask 4.1: Create Analysis Scripts
+# Navigate to analysis directory
+cd ~/network_baseline_lab/analysis
+
+# Create connection analysis script
+cat > analyze_connections.sh << 'EOF'
+#!/bin/bash
+echo "=== Connection Analysis ==="
+echo "Total connections:"
+tail -n +9 ../zeek_logs/conn.log | wc -l
+
+echo -e "\nTop destination ports:"
+tail -n +9 ../zeek_logs/conn.log | cut -f5 | sort | uniq -c | sort -nr | head -10
+
+echo -e "\nTop protocols:"
+tail -n +9 ../zeek_logs/conn.log | cut -f7 | sort | uniq -c | sort -nr
+EOF
+
+chmod +x analyze_connections.sh
+Subtask 4.2: Create DNS Analysis Script
+# Create DNS analysis script
+cat > analyze_dns.sh << 'EOF'
+#!/bin/bash
+echo "=== DNS Analysis ==="
+echo "Total DNS queries:"
+tail -n +9 ../zeek_logs/dns.log | wc -l
+
+echo -e "\nTop queried domains:"
+tail -n +9 ../zeek_logs/dns.log | cut -f10 | sort | uniq -c | sort -nr | head -10
+
+echo -e "\nQuery types:"
+tail -n +9 ../zeek_logs/dns.log | cut -f14 | sort | uniq -c | sort -nr
+EOF
+
+chmod +x analyze_dns.sh
+Subtask 4.3: Run Analysis Scripts
+# Execute connection analysis
+./analyze_connections.sh
+
+echo -e "\n" | tee -a baseline_report.txt
+./analyze_connections.sh >> baseline_report.txt
+
+# Execute DNS analysis
+./analyze_dns.sh
+
+echo -e "\n" | tee -a baseline_report.txt
+./analyze_dns.sh >> baseline_report.txt
+Subtask 4.4: Compare Raw vs Enriched Data
+# View raw packet count from tcpdump
+echo "=== Raw Packet Analysis ==="
+tcpdump -r ../tcpdump_captures/baseline_traffic.pcap | wc -l
+
+# Create comparison summary
+cat > comparison_summary.sh << 'EOF'
+#!/bin/bash
+echo "=== Baseline Traffic Summary ==="
+echo "Capture file size: $(ls -lh ../tcpdump_captures/baseline_traffic.pcap | awk '{print $5}')"
+echo "Raw packets captured: $(tcpdump -r ../tcpdump_captures/baseline_traffic.pcap 2>/dev/null | wc -l)"
+echo "Zeek connections logged: $(tail -n +9 ../zeek_logs/conn.log | wc -l)"
+echo "DNS queries detected: $(tail -n +9 ../zeek_logs/dns.log | wc -l)"
+echo "HTTP sessions found: $(tail -n +9 ../zeek_logs/http.log | wc -l)"
+EOF
+
+chmod +x comparison_summary.sh
+./comparison_summary.sh
+Task 5: Document Baseline Findings
+Subtask 5.1: Create Comprehensive Report
+# Generate final baseline report
+cat > final_baseline_report.txt << 'EOF'
+NETWORK BASELINE ANALYSIS REPORT
+================================
+Generated: $(date)
+
+METHODOLOGY:
+- Captured 2 minutes of network traffic using tcpdump
+- Processed raw packets through Zeek for protocol analysis
+- Analyzed connection patterns, DNS queries, and HTTP traffic
+
+FINDINGS:
+EOF
+
+# Append analysis results
+echo -e "\n" >> final_baseline_report.txt
+./comparison_summary.sh >> final_baseline_report.txt
+echo -e "\n" >> final_baseline_report.txt
+./analyze_connections.sh >> final_baseline_report.txt
+echo -e "\n" >> final_baseline_report.txt
+./analyze_dns.sh >> final_baseline_report.txt
+
+# Display final report
+cat final_baseline_report.txt
+Subtask 5.2: Verify Data Integrity
+# Check file integrity and completeness
+echo "=== Data Verification ==="
+echo "tcpdump capture file:"
+file ../tcpdump_captures/baseline_traffic.pcap
+
+echo -e "\nZeek log files generated:"
+ls -la ../zeek_logs/*.log | wc -l
+
+echo -e "\nLog file sizes:"
+du -sh ../zeek_logs/*.log
+Troubleshooting Tips
+Permission Issues: Ensure you run tcpdump with sudo privileges for network interface access.
+
+Interface Not Found: Use ip link show to identify the correct network interface name.
+
+Zeek Path Issues: Verify Zeek installation path with which zeek or use full path /opt/zeek/bin/zeek.
+
+Empty Log Files: Ensure network traffic was generated during capture period and pcap file contains data.
+
+Conclusion
+You have successfully established a network baseline using tcpdump for raw packet capture and Zeek for enriched traffic analysis. This baseline data provides essential insights into normal network behavior patterns, including connection frequencies, protocol usage, DNS query patterns, and HTTP traffic characteristics.
+
+This foundational knowledge enables you to identify anomalies, detect security threats, and monitor network performance changes over time. The combination of raw packet data and structured log analysis creates a comprehensive view of network activity that serves as a reference point for future security monitoring and incident response activities.
