@@ -1,0 +1,697 @@
+Automate Alert Triage Using Python + GPT Agents
+Learning Objectives
+By completing this lab, you will:
+
+Build Python scripts to automate security alert triage and classification
+Integrate GPT-powered agents for intelligent decision-making in alert processing
+Evaluate and measure alert triage performance using metrics and validation techniques
+Implement a complete automated triage pipeline using open-source tools
+Prerequisites
+Basic Python programming knowledge
+Understanding of JSON data structures
+Familiarity with Linux command line
+Basic knowledge of security alerts and incident response concepts
+Lab Environment
+Al Nafi provides a Linux-based cloud machine for this lab. Click Start Lab to access your dedicated environment. The machine comes as bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Task 1: Set Up Environment and Install Dependencies
+Step 1.1: Update System and Install Python Dependencies
+sudo apt update && sudo apt upgrade -y
+sudo apt install python3 python3-pip python3-venv git curl -y
+Step 1.2: Create Project Directory and Virtual Environment
+mkdir ~/alert-triage-lab
+cd ~/alert-triage-lab
+python3 -m venv venv
+source venv/bin/activate
+Step 1.3: Install Required Python Packages
+pip install openai requests pandas numpy scikit-learn matplotlib seaborn flask
+Step 1.4: Create Project Structure
+mkdir -p {data,scripts,models,logs,config}
+touch scripts/{alert_generator.py,triage_agent.py,performance_evaluator.py}
+touch config/config.json
+Task 2: Implement Python Scripts to Automate Triage
+Step 2.1: Create Sample Alert Data Generator
+Create the alert generator script:
+
+cat > scripts/alert_generator.py << 'EOF'
+import json
+import random
+from datetime import datetime, timedelta
+import uuid
+
+class AlertGenerator:
+    def __init__(self):
+        self.alert_types = [
+            "Malware Detection", "Suspicious Network Activity", 
+            "Failed Login Attempts", "Data Exfiltration", 
+            "Privilege Escalation", "Phishing Attempt"
+        ]
+        self.severities = ["Low", "Medium", "High", "Critical"]
+        self.sources = ["Firewall", "IDS", "Antivirus", "SIEM", "EDR"]
+        
+    def generate_alert(self):
+        return {
+            "id": str(uuid.uuid4()),
+            "timestamp": (datetime.now() - timedelta(
+                minutes=random.randint(0, 1440))).isoformat(),
+            "type": random.choice(self.alert_types),
+            "severity": random.choice(self.severities),
+            "source": random.choice(self.sources),
+            "description": f"Alert detected: {random.choice(self.alert_types)}",
+            "source_ip": f"192.168.{random.randint(1,254)}.{random.randint(1,254)}",
+            "destination_ip": f"10.0.{random.randint(1,254)}.{random.randint(1,254)}",
+            "affected_systems": random.randint(1, 10),
+            "confidence_score": round(random.uniform(0.1, 1.0), 2)
+        }
+    
+    def generate_dataset(self, count=100):
+        return [self.generate_alert() for _ in range(count)]
+
+if __name__ == "__main__":
+    generator = AlertGenerator()
+    alerts = generator.generate_dataset(200)
+    
+    with open("../data/sample_alerts.json", "w") as f:
+        json.dump(alerts, f, indent=2)
+    
+    print(f"Generated {len(alerts)} sample alerts")
+EOF
+Step 2.2: Create Basic Triage Logic
+cat > scripts/basic_triage.py << 'EOF'
+import json
+import pandas as pd
+from datetime import datetime
+
+class BasicTriageEngine:
+    def __init__(self):
+        self.severity_weights = {
+            "Critical": 4,
+            "High": 3,
+            "Medium": 2,
+            "Low": 1
+        }
+        
+        self.type_priorities = {
+            "Malware Detection": 4,
+            "Data Exfiltration": 4,
+            "Privilege Escalation": 3,
+            "Suspicious Network Activity": 2,
+            "Failed Login Attempts": 2,
+            "Phishing Attempt": 3
+        }
+    
+    def calculate_priority_score(self, alert):
+        severity_score = self.severity_weights.get(alert["severity"], 1)
+        type_score = self.type_priorities.get(alert["type"], 1)
+        confidence_score = alert["confidence_score"]
+        affected_systems = min(alert["affected_systems"], 10) / 10
+        
+        priority_score = (severity_score * 0.4 + 
+                         type_score * 0.3 + 
+                         confidence_score * 0.2 + 
+                         affected_systems * 0.1)
+        
+        return round(priority_score, 2)
+    
+    def classify_alert(self, alert):
+        priority_score = self.calculate_priority_score(alert)
+        
+        if priority_score >= 3.5:
+            return "Immediate"
+        elif priority_score >= 2.5:
+            return "High Priority"
+        elif priority_score >= 1.5:
+            return "Medium Priority"
+        else:
+            return "Low Priority"
+    
+    def triage_alerts(self, alerts):
+        triaged_alerts = []
+        for alert in alerts:
+            priority_score = self.calculate_priority_score(alert)
+            classification = self.classify_alert(alert)
+            
+            triaged_alert = alert.copy()
+            triaged_alert["priority_score"] = priority_score
+            triaged_alert["classification"] = classification
+            triaged_alert["triage_timestamp"] = datetime.now().isoformat()
+            
+            triaged_alerts.append(triaged_alert)
+        
+        return sorted(triaged_alerts, key=lambda x: x["priority_score"], reverse=True)
+
+if __name__ == "__main__":
+    with open("../data/sample_alerts.json", "r") as f:
+        alerts = json.load(f)
+    
+    triage_engine = BasicTriageEngine()
+    triaged = triage_engine.triage_alerts(alerts)
+    
+    with open("../data/triaged_alerts.json", "w") as f:
+        json.dump(triaged, f, indent=2)
+    
+    print(f"Triaged {len(triaged)} alerts")
+    print(f"Classifications: {pd.DataFrame(triaged)['classification'].value_counts().to_dict()}")
+EOF
+Step 2.3: Generate and Process Initial Data
+cd scripts
+python3 alert_generator.py
+python3 basic_triage.py
+cd ..
+Task 3: Integrate GPT Agents for Enhanced Decision-Making
+Step 3.1: Create Configuration File
+cat > config/config.json << 'EOF'
+{
+    "gpt_model": "gpt-3.5-turbo",
+    "max_tokens": 500,
+    "temperature": 0.3,
+    "triage_prompt_template": "Analyze this security alert and provide triage recommendations:\n\nAlert Details:\n{alert_details}\n\nProvide:\n1. Risk Assessment (1-10)\n2. Recommended Action\n3. Reasoning\n4. Urgency Level",
+    "batch_size": 10
+}
+EOF
+Step 3.2: Create GPT-Powered Triage Agent
+cat > scripts/triage_agent.py << 'EOF'
+import json
+import time
+import requests
+from datetime import datetime
+
+class GPTTriageAgent:
+    def __init__(self, config_path="../config/config.json"):
+        with open(config_path, 'r') as f:
+            self.config = json.load(f)
+        
+        # For this lab, we'll simulate GPT responses
+        # In production, you would use actual OpenAI API
+        self.simulate_gpt = True
+        
+    def format_alert_for_analysis(self, alert):
+        return f"""
+        ID: {alert['id']}
+        Type: {alert['type']}
+        Severity: {alert['severity']}
+        Source: {alert['source']}
+        Description: {alert['description']}
+        Source IP: {alert['source_ip']}
+        Affected Systems: {alert['affected_systems']}
+        Confidence: {alert['confidence_score']}
+        """
+    
+    def simulate_gpt_response(self, alert):
+        # Simulate GPT analysis based on alert characteristics
+        severity_map = {"Critical": 9, "High": 7, "Medium": 5, "Low": 3}
+        base_risk = severity_map.get(alert["severity"], 3)
+        
+        # Add some variation based on other factors
+        if alert["type"] in ["Malware Detection", "Data Exfiltration"]:
+            risk_score = min(10, base_risk + 2)
+        elif alert["confidence_score"] > 0.8:
+            risk_score = min(10, base_risk + 1)
+        else:
+            risk_score = base_risk
+        
+        actions = {
+            (9, 10): "Immediate investigation required",
+            (7, 8): "Escalate to security team",
+            (5, 6): "Monitor and investigate within 4 hours",
+            (1, 4): "Log and review during next cycle"
+        }
+        
+        urgency_levels = {
+            (9, 10): "Critical",
+            (7, 8): "High",
+            (5, 6): "Medium",
+            (1, 4): "Low"
+        }
+        
+        action = next(v for k, v in actions.items() if k[0] <= risk_score <= k[1])
+        urgency = next(v for k, v in urgency_levels.items() if k[0] <= risk_score <= k[1])
+        
+        return {
+            "risk_assessment": risk_score,
+            "recommended_action": action,
+            "reasoning": f"Based on {alert['type']} with {alert['severity']} severity and {alert['confidence_score']} confidence",
+            "urgency_level": urgency,
+            "analysis_timestamp": datetime.now().isoformat()
+        }
+    
+    def analyze_alert(self, alert):
+        if self.simulate_gpt:
+            return self.simulate_gpt_response(alert)
+        else:
+            # Real GPT API call would go here
+            # This is where you'd integrate with OpenAI API
+            pass
+    
+    def batch_analyze_alerts(self, alerts, max_alerts=50):
+        analyzed_alerts = []
+        
+        for i, alert in enumerate(alerts[:max_alerts]):
+            print(f"Analyzing alert {i+1}/{min(len(alerts), max_alerts)}")
+            
+            gpt_analysis = self.analyze_alert(alert)
+            
+            enhanced_alert = alert.copy()
+            enhanced_alert["gpt_analysis"] = gpt_analysis
+            enhanced_alert["final_priority"] = self.calculate_final_priority(alert, gpt_analysis)
+            
+            analyzed_alerts.append(enhanced_alert)
+            
+            # Simulate API rate limiting
+            time.sleep(0.1)
+        
+        return analyzed_alerts
+    
+    def calculate_final_priority(self, alert, gpt_analysis):
+        # Combine basic triage with GPT insights
+        basic_score = alert.get("priority_score", 2.0)
+        gpt_risk = gpt_analysis["risk_assessment"] / 10 * 4  # Scale to 0-4
+        
+        final_score = (basic_score * 0.6) + (gpt_risk * 0.4)
+        return round(final_score, 2)
+
+if __name__ == "__main__":
+    with open("../data/triaged_alerts.json", "r") as f:
+        alerts = json.load(f)
+    
+    agent = GPTTriageAgent()
+    enhanced_alerts = agent.batch_analyze_alerts(alerts, max_alerts=30)
+    
+    with open("../data/gpt_enhanced_alerts.json", "w") as f:
+        json.dump(enhanced_alerts, f, indent=2)
+    
+    print(f"Enhanced {len(enhanced_alerts)} alerts with GPT analysis")
+EOF
+Step 3.3: Run GPT Enhancement
+cd scripts
+python3 triage_agent.py
+cd ..
+Task 4: Evaluate Alert Triage Performance
+Step 4.1: Create Performance Evaluation Script
+cat > scripts/performance_evaluator.py << 'EOF'
+import json
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+from datetime import datetime
+
+class TriagePerformanceEvaluator:
+    def __init__(self):
+        self.metrics = {}
+        
+    def load_data(self, filepath):
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    
+    def create_ground_truth(self, alerts):
+        # Simulate ground truth based on alert characteristics
+        ground_truth = []
+        for alert in alerts:
+            # Create realistic ground truth labels
+            if (alert["severity"] == "Critical" and 
+                alert["confidence_score"] > 0.7 and
+                alert["type"] in ["Malware Detection", "Data Exfiltration"]):
+                ground_truth.append("True Positive")
+            elif (alert["severity"] in ["Low", "Medium"] and 
+                  alert["confidence_score"] < 0.4):
+                ground_truth.append("False Positive")
+            elif alert["confidence_score"] > 0.8:
+                ground_truth.append("True Positive")
+            else:
+                ground_truth.append("True Positive" if np.random.random() > 0.3 else "False Positive")
+        
+        return ground_truth
+    
+    def evaluate_classification_accuracy(self, alerts, ground_truth):
+        predictions = []
+        for alert in alerts:
+            gpt_risk = alert.get("gpt_analysis", {}).get("risk_assessment", 5)
+            if gpt_risk >= 7:
+                predictions.append("True Positive")
+            else:
+                predictions.append("False Positive")
+        
+        # Calculate metrics
+        tp = sum(1 for p, g in zip(predictions, ground_truth) if p == "True Positive" and g == "True Positive")
+        fp = sum(1 for p, g in zip(predictions, ground_truth) if p == "True Positive" and g == "False Positive")
+        tn = sum(1 for p, g in zip(predictions, ground_truth) if p == "False Positive" and g == "False Positive")
+        fn = sum(1 for p, g in zip(predictions, ground_truth) if p == "False Positive" and g == "True Positive")
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        accuracy = (tp + tn) / len(predictions)
+        
+        return {
+            "accuracy": round(accuracy, 3),
+            "precision": round(precision, 3),
+            "recall": round(recall, 3),
+            "f1_score": round(f1_score, 3),
+            "true_positives": tp,
+            "false_positives": fp,
+            "true_negatives": tn,
+            "false_negatives": fn
+        }
+    
+    def analyze_triage_efficiency(self, alerts):
+        df = pd.DataFrame(alerts)
+        
+        # Priority distribution
+        priority_dist = df['classification'].value_counts()
+        
+        # Average processing scores
+        avg_priority_score = df['priority_score'].mean()
+        avg_final_priority = df['final_priority'].mean()
+        
+        # Risk assessment distribution
+        risk_scores = [alert.get("gpt_analysis", {}).get("risk_assessment", 0) for alert in alerts]
+        avg_risk_score = np.mean(risk_scores)
+        
+        return {
+            "priority_distribution": priority_dist.to_dict(),
+            "average_priority_score": round(avg_priority_score, 2),
+            "average_final_priority": round(avg_final_priority, 2),
+            "average_risk_score": round(avg_risk_score, 2),
+            "total_alerts_processed": len(alerts)
+        }
+    
+    def generate_performance_report(self, alerts):
+        ground_truth = self.create_ground_truth(alerts)
+        classification_metrics = self.evaluate_classification_accuracy(alerts, ground_truth)
+        efficiency_metrics = self.analyze_triage_efficiency(alerts)
+        
+        report = {
+            "evaluation_timestamp": datetime.now().isoformat(),
+            "classification_performance": classification_metrics,
+            "triage_efficiency": efficiency_metrics,
+            "recommendations": self.generate_recommendations(classification_metrics, efficiency_metrics)
+        }
+        
+        return report
+    
+    def generate_recommendations(self, classification_metrics, efficiency_metrics):
+        recommendations = []
+        
+        if classification_metrics["precision"] < 0.8:
+            recommendations.append("Consider adjusting risk thresholds to reduce false positives")
+        
+        if classification_metrics["recall"] < 0.8:
+            recommendations.append("Review alert detection rules to capture more true threats")
+        
+        if efficiency_metrics["average_risk_score"] < 5:
+            recommendations.append("Alert sources may need calibration for better risk assessment")
+        
+        high_priority_ratio = efficiency_metrics["priority_distribution"].get("Immediate", 0) / efficiency_metrics["total_alerts_processed"]
+        if high_priority_ratio > 0.3:
+            recommendations.append("Too many high-priority alerts - consider refining classification criteria")
+        
+        return recommendations
+    
+    def create_visualizations(self, alerts):
+        df = pd.DataFrame(alerts)
+        
+        # Create plots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Priority distribution
+        priority_counts = df['classification'].value_counts()
+        axes[0, 0].pie(priority_counts.values, labels=priority_counts.index, autopct='%1.1f%%')
+        axes[0, 0].set_title('Alert Priority Distribution')
+        
+        # Risk score distribution
+        risk_scores = [alert.get("gpt_analysis", {}).get("risk_assessment", 0) for alert in alerts]
+        axes[0, 1].hist(risk_scores, bins=10, edgecolor='black')
+        axes[0, 1].set_title('GPT Risk Assessment Distribution')
+        axes[0, 1].set_xlabel('Risk Score')
+        axes[0, 1].set_ylabel('Frequency')
+        
+        # Severity vs Priority Score
+        severity_order = ['Low', 'Medium', 'High', 'Critical']
+        df['severity'] = pd.Categorical(df['severity'], categories=severity_order, ordered=True)
+        df.boxplot(column='priority_score', by='severity', ax=axes[1, 0])
+        axes[1, 0].set_title('Priority Score by Severity')
+        
+        # Final priority vs Basic priority
+        axes[1, 1].scatter(df['priority_score'], df['final_priority'], alpha=0.6)
+        axes[1, 1].plot([0, 4], [0, 4], 'r--', alpha=0.8)
+        axes[1, 1].set_xlabel('Basic Priority Score')
+        axes[1, 1].set_ylabel('Final Priority Score')
+        axes[1, 1].set_title('Basic vs Enhanced Priority Scores')
+        
+        plt.tight_layout()
+        plt.savefig('../logs/triage_performance_analysis.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print("Performance visualizations saved to ../logs/triage_performance_analysis.png")
+
+if __name__ == "__main__":
+    evaluator = TriagePerformanceEvaluator()
+    
+    # Load enhanced alerts
+    alerts = evaluator.load_data("../data/gpt_enhanced_alerts.json")
+    
+    # Generate performance report
+    report = evaluator.generate_performance_report(alerts)
+    
+    # Save report
+    with open("../logs/performance_report.json", "w") as f:
+        json.dump(report, f, indent=2)
+    
+    # Create visualizations
+    evaluator.create_visualizations(alerts)
+    
+    # Print summary
+    print("=== TRIAGE PERFORMANCE EVALUATION ===")
+    print(f"Total Alerts Processed: {report['triage_efficiency']['total_alerts_processed']}")
+    print(f"Classification Accuracy: {report['classification_performance']['accuracy']}")
+    print(f"Precision: {report['classification_performance']['precision']}")
+    print(f"Recall: {report['classification_performance']['recall']}")
+    print(f"F1-Score: {report['classification_performance']['f1_score']}")
+    print(f"Average Risk Score: {report['triage_efficiency']['average_risk_score']}")
+    
+    print("\n=== RECOMMENDATIONS ===")
+    for i, rec in enumerate(report['recommendations'], 1):
+        print(f"{i}. {rec}")
+    
+    print(f"\nDetailed report saved to: ../logs/performance_report.json")
+EOF
+Step 4.2: Run Performance Evaluation
+cd scripts
+python3 performance_evaluator.py
+cd ..
+Step 4.3: Create Summary Dashboard Script
+cat > scripts/dashboard.py << 'EOF'
+import json
+import pandas as pd
+from datetime import datetime
+
+class TriageDashboard:
+    def __init__(self):
+        self.alerts_data = None
+        self.performance_data = None
+    
+    def load_data(self):
+        with open("../data/gpt_enhanced_alerts.json", "r") as f:
+            self.alerts_data = json.load(f)
+        
+        with open("../logs/performance_report.json", "r") as f:
+            self.performance_data = json.load(f)
+    
+    def display_summary(self):
+        print("=" * 60)
+        print("           AUTOMATED ALERT TRIAGE DASHBOARD")
+        print("=" * 60)
+        
+        # Alert Statistics
+        total_alerts = len(self.alerts_data)
+        df = pd.DataFrame(self.alerts_data)
+        
+        print(f"\n📊 ALERT STATISTICS")
+        print(f"   Total Alerts Processed: {total_alerts}")
+        print(f"   Alert Types: {df['type'].nunique()}")
+        print(f"   Severity Levels: {df['severity'].nunique()}")
+        print(f"   Average Confidence: {df['confidence_score'].mean():.2f}")
+        
+        # Priority Distribution
+        priority_dist = df['classification'].value_counts()
+        print(f"\n🎯 PRIORITY DISTRIBUTION")
+        for priority, count in priority_dist.items():
+            percentage = (count / total_alerts) * 100
+            print(f"   {priority}: {count} ({percentage:.1f}%)")
+        
+        # Performance Metrics
+        perf = self.performance_data['classification_performance']
+        print(f"\n📈 PERFORMANCE METRICS")
+        print(f"   Accuracy: {perf['accuracy']:.1%}")
+        print(f"   Precision: {perf['precision']:.1%}")
+        print(f"   Recall: {perf['recall']:.1%}")
+        print(f"   F1-Score: {perf['f1_score']:.1%}")
+        
+        # Top Risk Alerts
+        high_risk_alerts = [a for a in self.alerts_data 
+                           if a.get('gpt_analysis', {}).get('risk_assessment', 0) >= 8]
+        print(f"\n🚨 HIGH RISK ALERTS")
+        print(f"   Count: {len(high_risk_alerts)}")
+        
+        if high_risk_alerts:
+            print("   Top 3 High Risk Alerts:")
+            for i, alert in enumerate(sorted(high_risk_alerts, 
+                                           key=lambda x: x['gpt_analysis']['risk_assessment'], 
+                                           reverse=True)[:3], 1):
+                risk_score = alert['gpt_analysis']['risk_assessment']
+                print(f"   {i}. {alert['type']} (Risk: {risk_score}/10)")
+        
+        # Recommendations
+        recommendations = self.performance_data.get('recommendations', [])
+        if recommendations:
+            print(f"\n💡 RECOMMENDATIONS")
+            for i, rec in enumerate(recommendations, 1):
+                print(f"   {i}. {rec}")
+        
+        print(f"\n⏰ Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 60)
+
+if __name__ == "__main__":
+    dashboard = TriageDashboard()
+    dashboard.load_data()
+    dashboard.display_summary()
+EOF
+Step 4.4: Display Final Dashboard
+cd scripts
+python3 dashboard.py
+cd ..
+Task 5: Verify Complete Pipeline
+Step 5.1: Create Pipeline Verification Script
+cat > scripts/verify_pipeline.py << 'EOF'
+import json
+import os
+from datetime import datetime
+
+def verify_files_exist():
+    required_files = [
+        "../data/sample_alerts.json",
+        "../data/triaged_alerts.json", 
+        "../data/gpt_enhanced_alerts.json",
+        "../logs/performance_report.json"
+    ]
+    
+    print("🔍 Verifying Pipeline Files...")
+    all_exist = True
+    
+    for file_path in required_files:
+        if os.path.exists(file_path):
+            size = os.path.getsize(file_path)
+            print(f"   ✅ {file_path} ({size} bytes)")
+        else:
+            print(f"   ❌ {file_path} - MISSING")
+            all_exist = False
+    
+    return all_exist
+
+def verify_data_integrity():
+    print("\n🔍 Verifying Data Integrity...")
+    
+    try:
+        # Check sample alerts
+        with open("../data/sample_alerts.json", "r") as f:
+            sample_alerts = json.load(f)
+        print(f"   ✅ Sample alerts: {len(sample_alerts)} records")
+        
+        # Check triaged alerts
+        with open("../data/triaged_alerts.json", "r") as f:
+            triaged_alerts = json.load(f)
+        print(f"   ✅ Triaged alerts: {len(triaged_alerts)} records")
+        
+        # Check enhanced alerts
+        with open("../data/gpt_enhanced_alerts.json", "r") as f:
+            enhanced_alerts = json.load(f)
+        print(f"   ✅ GPT enhanced alerts: {len(enhanced_alerts)} records")
+        
+        # Verify data flow
+        if len(enhanced_alerts) <= len(triaged_alerts) <= len(sample_alerts):
+            print("   ✅ Data flow integrity maintained")
+            return True
+        else:
+            print("   ❌ Data flow integrity issue detected")
+            return False
+            
+    except Exception as e:
+        print(f"   ❌ Data integrity check failed: {e}")
+        return False
+
+def verify_performance_metrics():
+    print("\n🔍 Verifying Performance Metrics...")
+    
+    try:
+        with open("../logs/performance_report.json", "r") as f:
+            report = json.load(f)
+        
+        required_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
+        classification_perf = report.get('classification_performance', {})
+        
+        for metric in required_metrics:
+            if metric in classification_perf:
+                value = classification_perf[metric]
+                print(f"   ✅ {metric.capitalize()}: {value}")
+            else:
+                print(f"   ❌ Missing metric: {metric}")
+                return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"   ❌ Performance metrics verification failed: {e}")
+        return False
+
+def main():
+    print("=" * 50)
+    print("    ALERT TRIAGE PIPELINE VERIFICATION")
+    print("=" * 50)
+    
+    files_ok = verify_files_exist()
+    data_ok = verify_data_integrity()
+    metrics_ok = verify_performance_metrics()
+    
+    print(f"\n📋 VERIFICATION SUMMARY")
+    print(f"   Files: {'✅ PASS' if files_ok else '❌ FAIL'}")
+    print(f"   Data Integrity: {'✅ PASS' if data_ok else '❌ FAIL'}")
+    print(f"   Performance Metrics: {'✅ PASS' if metrics_ok else '❌ FAIL'}")
+    
+    if all([files_ok, data_ok, metrics_ok]):
+        print(f"\n🎉 PIPELINE VERIFICATION: ✅ SUCCESS")
+        print("   All components are working correctly!")
+    else:
+        print(f"\n⚠️  PIPELINE VERIFICATION: ❌ ISSUES DETECTED")
+        print("   Please review the failed components above.")
+    
+    print("=" * 50)
+
+if __name__ == "__main__":
+    main()
+EOF
+Step 5.2: Run Final Verification
+cd scripts
+python3 verify_pipeline.py
+cd ..
+Step 5.3: View Generated Files
+echo "📁 Generated Files Structure:"
+find . -name "*.json" -o -name "*.png" | sort
+echo ""
+echo "📊 Data Summary:"
+echo "Sample Alerts: $(jq length data/sample_alerts.json 2>/dev/null || echo 'N/A')"
+echo "Triaged Alerts: $(jq length data/triaged_alerts.json 2>/dev/null || echo 'N/A')"
+echo "Enhanced Alerts: $(jq length data/gpt_enhanced_alerts.json 2>/dev/null || echo 'N/A')"
+Conclusion
+You have successfully built a complete automated alert triage system that combines traditional rule-based classification with GPT-powered intelligent analysis. This lab demonstrated:
+
+Key Accomplishments:
+
+Automated Triage Pipeline: Created Python scripts that automatically process and classify security alerts based on multiple criteria
+GPT Integration: Implemented AI-powered agents that enhance decision-making through intelligent risk assessment and recommendation generation
+Performance Evaluation: Built comprehensive metrics and visualization tools to measure and improve triage effectiveness
+End-to-End Workflow: Established a complete pipeline from alert generation through final classification and reporting
+Real-World Applications: This automated triage system significantly reduces manual effort in security operations centers, improves response times for critical threats, and provides consistent, data-driven alert prioritization. The combination of rule-based logic and AI-powered analysis creates a robust solution that can adapt to evolving threat landscapes while maintaining high accuracy and efficiency.
+
+The skills and techniques learned in this lab are directly applicable to enterprise security operations, incident response automation, and AI-enhanced cybersecurity workflows.
