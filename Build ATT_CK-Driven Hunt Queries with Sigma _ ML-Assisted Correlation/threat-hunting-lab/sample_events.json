@@ -1,0 +1,5 @@
+{"timestamp": "2024-01-15T10:30:00Z", "event_id": 4688, "process_name": "powershell.exe", "command_line": "powershell.exe -enc SQBuAHYAbwBrAGUALQBXAGUAYgBSAGUAcQB1AGUAcwB0AA==", "parent_process": "cmd.exe", "user": "DOMAIN\\user1"}
+{"timestamp": "2024-01-15T10:31:00Z", "event_id": 4688, "process_name": "cmd.exe", "command_line": "cmd.exe /c whoami", "parent_process": "powershell.exe", "user": "DOMAIN\\user1"}
+{"timestamp": "2024-01-15T10:32:00Z", "event_id": 4688, "process_name": "net.exe", "command_line": "net user administrator /active:yes", "parent_process": "cmd.exe", "user": "DOMAIN\\user1"}
+{"timestamp": "2024-01-15T10:33:00Z", "event_id": 4624, "logon_type": 3, "source_ip": "192.168.1.100", "user": "administrator", "workstation": "ATTACKER-PC"}
+{"timestamp": "2024-01-15T10:34:00Z", "event_id": 4688, "process_name": "mimikatz.exe", "command_line": "mimikatz.exe sekurlsa::logonpasswords", "parent_process": "cmd.exe", "user": "administrator"}
