@@ -1,0 +1,673 @@
+Detect DNS Tunneling via Entropy Analysis + Anomaly ML Model
+Objectives
+By completing this lab, you will:
+
+Capture and analyze DNS traffic for tunneling detection
+Calculate entropy values to identify suspicious DNS queries
+Build and train an anomaly detection machine learning model
+Identify DNS tunneling patterns using statistical analysis
+Prerequisites
+Basic understanding of DNS protocol
+Familiarity with Linux command line
+Basic knowledge of Python programming
+Understanding of network packet analysis concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated Linux machine. The provided machine is bare metal with no pre-installed tools, so you will install all required tools during the lab.
+
+Task 1: Capture DNS Traffic and Perform Entropy Analysis
+Subtask 1.1: Install Required Tools
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and pip
+sudo apt install python3 python3-pip -y
+
+# Install network tools
+sudo apt install tcpdump dnsutils -y
+
+# Install Python libraries
+pip3 install scapy pandas numpy matplotlib scikit-learn scipy
+Subtask 1.2: Create DNS Traffic Generator
+Create a script to generate both normal and tunneling DNS traffic:
+
+# Create dns_traffic_generator.py
+cat > dns_traffic_generator.py << 'EOF'
+#!/usr/bin/env python3
+import subprocess
+import time
+import random
+import string
+
+def generate_normal_dns():
+    """Generate normal DNS queries"""
+    normal_domains = [
+        "google.com", "facebook.com", "amazon.com", "microsoft.com",
+        "apple.com", "netflix.com", "twitter.com", "linkedin.com"
+    ]
+    
+    for domain in normal_domains:
+        subprocess.run(['dig', '+short', domain], capture_output=True)
+        time.sleep(0.5)
+
+def generate_tunneling_dns():
+    """Generate DNS tunneling-like queries with high entropy"""
+    base_domain = "tunnel.example.com"
+    
+    for _ in range(10):
+        # Generate high-entropy subdomain
+        random_data = ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
+        tunneling_query = f"{random_data}.{base_domain}"
+        
+        # Simulate DNS query (will fail but generate traffic)
+        subprocess.run(['dig', '+short', tunneling_query], capture_output=True)
+        time.sleep(0.3)
+
+if __name__ == "__main__":
+    print("Generating normal DNS traffic...")
+    generate_normal_dns()
+    
+    print("Generating tunneling-like DNS traffic...")
+    generate_tunneling_dns()
+    
+    print("Traffic generation complete!")
+EOF
+
+chmod +x dns_traffic_generator.py
+Subtask 1.3: Capture DNS Traffic
+# Start packet capture in background
+sudo tcpdump -i any -w dns_traffic.pcap port 53 &
+TCPDUMP_PID=$!
+
+# Generate DNS traffic
+python3 dns_traffic_generator.py
+
+# Wait a moment then stop capture
+sleep 5
+sudo kill $TCPDUMP_PID
+Subtask 1.4: Create Entropy Analysis Script
+# Create entropy_analyzer.py
+cat > entropy_analyzer.py << 'EOF'
+#!/usr/bin/env python3
+import math
+from collections import Counter
+from scapy.all import *
+import pandas as pd
+import numpy as np
+
+def calculate_entropy(data):
+    """Calculate Shannon entropy of a string"""
+    if len(data) == 0:
+        return 0
+    
+    # Count frequency of each character
+    counter = Counter(data)
+    length = len(data)
+    
+    # Calculate entropy
+    entropy = 0
+    for count in counter.values():
+        probability = count / length
+        if probability > 0:
+            entropy -= probability * math.log2(probability)
+    
+    return entropy
+
+def extract_dns_queries(pcap_file):
+    """Extract DNS queries from pcap file"""
+    dns_queries = []
+    
+    try:
+        packets = rdpcap(pcap_file)
+        
+        for packet in packets:
+            if packet.haslayer(DNS) and packet[DNS].qr == 0:  # DNS query
+                query_name = packet[DNS].qd.qname.decode('utf-8').rstrip('.')
+                dns_queries.append(query_name)
+    
+    except Exception as e:
+        print(f"Error reading pcap: {e}")
+    
+    return dns_queries
+
+def analyze_dns_entropy(queries):
+    """Analyze entropy of DNS queries"""
+    results = []
+    
+    for query in queries:
+        # Extract subdomain part (everything before the last two parts)
+        parts = query.split('.')
+        if len(parts) > 2:
+            subdomain = '.'.join(parts[:-2])
+        else:
+            subdomain = parts[0] if parts else query
+        
+        entropy = calculate_entropy(subdomain)
+        length = len(subdomain)
+        
+        results.append({
+            'query': query,
+            'subdomain': subdomain,
+            'entropy': entropy,
+            'length': length,
+            'entropy_per_char': entropy / length if length > 0 else 0
+        })
+    
+    return results
+
+if __name__ == "__main__":
+    # Extract DNS queries from captured traffic
+    queries = extract_dns_queries('dns_traffic.pcap')
+    
+    if not queries:
+        print("No DNS queries found in capture file")
+        exit(1)
+    
+    # Analyze entropy
+    results = analyze_dns_entropy(queries)
+    
+    # Create DataFrame
+    df = pd.DataFrame(results)
+    
+    # Display results
+    print("DNS Entropy Analysis Results:")
+    print("=" * 50)
+    print(df.to_string(index=False))
+    
+    # Save results
+    df.to_csv('dns_entropy_results.csv', index=False)
+    print(f"\nResults saved to dns_entropy_results.csv")
+    
+    # Basic statistics
+    print(f"\nStatistics:")
+    print(f"Average entropy: {df['entropy'].mean():.2f}")
+    print(f"Max entropy: {df['entropy'].max():.2f}")
+    print(f"Min entropy: {df['entropy'].min():.2f}")
+    print(f"Std deviation: {df['entropy'].std():.2f}")
+EOF
+
+chmod +x entropy_analyzer.py
+Subtask 1.5: Run Entropy Analysis
+# Run entropy analysis
+python3 entropy_analyzer.py
+Task 2: Train an Anomaly Detection Model
+Subtask 2.1: Create ML Model Training Script
+# Create ml_anomaly_detector.py
+cat > ml_anomaly_detector.py << 'EOF'
+#!/usr/bin/env python3
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+import joblib
+import matplotlib.pyplot as plt
+
+class DNSAnomalyDetector:
+    def __init__(self):
+        self.model = IsolationForest(contamination=0.1, random_state=42)
+        self.scaler = StandardScaler()
+        self.features = ['entropy', 'length', 'entropy_per_char', 'digit_ratio', 'vowel_ratio']
+    
+    def extract_features(self, df):
+        """Extract additional features for ML model"""
+        # Calculate digit ratio
+        df['digit_ratio'] = df['subdomain'].apply(
+            lambda x: sum(c.isdigit() for c in x) / len(x) if len(x) > 0 else 0
+        )
+        
+        # Calculate vowel ratio
+        vowels = 'aeiou'
+        df['vowel_ratio'] = df['subdomain'].apply(
+            lambda x: sum(c.lower() in vowels for c in x) / len(x) if len(x) > 0 else 0
+        )
+        
+        return df[self.features]
+    
+    def train(self, df):
+        """Train the anomaly detection model"""
+        # Extract features
+        X = self.extract_features(df)
+        
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Train model
+        self.model.fit(X_scaled)
+        
+        # Get anomaly scores
+        anomaly_scores = self.model.decision_function(X_scaled)
+        predictions = self.model.predict(X_scaled)
+        
+        # Add results to dataframe
+        df['anomaly_score'] = anomaly_scores
+        df['is_anomaly'] = predictions == -1
+        
+        return df
+    
+    def predict(self, df):
+        """Predict anomalies on new data"""
+        X = self.extract_features(df)
+        X_scaled = self.scaler.transform(X)
+        
+        anomaly_scores = self.model.decision_function(X_scaled)
+        predictions = self.model.predict(X_scaled)
+        
+        df['anomaly_score'] = anomaly_scores
+        df['is_anomaly'] = predictions == -1
+        
+        return df
+    
+    def save_model(self, filename):
+        """Save trained model"""
+        joblib.dump({
+            'model': self.model,
+            'scaler': self.scaler,
+            'features': self.features
+        }, filename)
+    
+    def load_model(self, filename):
+        """Load trained model"""
+        data = joblib.load(filename)
+        self.model = data['model']
+        self.scaler = data['scaler']
+        self.features = data['features']
+
+def create_training_data():
+    """Create synthetic training data with known normal and anomalous patterns"""
+    normal_patterns = [
+        "www", "mail", "ftp", "blog", "shop", "news", "support", "api",
+        "cdn", "static", "images", "videos", "docs", "help", "about"
+    ]
+    
+    # Generate normal DNS queries
+    normal_data = []
+    for pattern in normal_patterns:
+        for domain in ["example.com", "test.org", "sample.net"]:
+            query = f"{pattern}.{domain}"
+            normal_data.append({
+                'query': query,
+                'subdomain': pattern,
+                'label': 'normal'
+            })
+    
+    # Generate anomalous DNS queries (high entropy)
+    anomalous_data = []
+    np.random.seed(42)
+    for _ in range(20):
+        # High entropy random string
+        random_str = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz0123456789'), 
+                                            size=np.random.randint(20, 40)))
+        query = f"{random_str}.tunnel.com"
+        anomalous_data.append({
+            'query': query,
+            'subdomain': random_str,
+            'label': 'anomaly'
+        })
+    
+    # Combine data
+    all_data = normal_data + anomalous_data
+    df = pd.DataFrame(all_data)
+    
+    # Calculate entropy and other features
+    df['entropy'] = df['subdomain'].apply(calculate_entropy)
+    df['length'] = df['subdomain'].apply(len)
+    df['entropy_per_char'] = df['entropy'] / df['length']
+    
+    return df
+
+def calculate_entropy(data):
+    """Calculate Shannon entropy"""
+    if len(data) == 0:
+        return 0
+    
+    from collections import Counter
+    counter = Counter(data)
+    length = len(data)
+    
+    entropy = 0
+    for count in counter.values():
+        probability = count / length
+        if probability > 0:
+            entropy -= probability * np.log2(probability)
+    
+    return entropy
+
+if __name__ == "__main__":
+    # Load real DNS data if available
+    try:
+        real_df = pd.read_csv('dns_entropy_results.csv')
+        print("Using real DNS data from previous analysis")
+    except FileNotFoundError:
+        print("Creating synthetic training data...")
+        real_df = create_training_data()
+    
+    # Initialize detector
+    detector = DNSAnomalyDetector()
+    
+    # Train model
+    print("Training anomaly detection model...")
+    results_df = detector.train(real_df)
+    
+    # Display results
+    print("\nAnomaly Detection Results:")
+    print("=" * 50)
+    print(results_df[['query', 'entropy', 'anomaly_score', 'is_anomaly']].to_string(index=False))
+    
+    # Show anomalies
+    anomalies = results_df[results_df['is_anomaly']]
+    print(f"\nDetected {len(anomalies)} anomalies:")
+    if len(anomalies) > 0:
+        print(anomalies[['query', 'entropy', 'anomaly_score']].to_string(index=False))
+    
+    # Save model
+    detector.save_model('dns_anomaly_model.pkl')
+    print("\nModel saved as 'dns_anomaly_model.pkl'")
+    
+    # Save results
+    results_df.to_csv('anomaly_detection_results.csv', index=False)
+    print("Results saved to 'anomaly_detection_results.csv'")
+EOF
+
+chmod +x ml_anomaly_detector.py
+Subtask 2.2: Train the Model
+# Train the anomaly detection model
+python3 ml_anomaly_detector.py
+Task 3: Identify Suspicious Tunneling Patterns
+Subtask 3.1: Create Pattern Analysis Script
+# Create pattern_analyzer.py
+cat > pattern_analyzer.py << 'EOF'
+#!/usr/bin/env python3
+import pandas as pd
+import numpy as np
+import re
+from collections import Counter
+
+class DNSTunnelingDetector:
+    def __init__(self):
+        self.entropy_threshold = 3.5
+        self.length_threshold = 20
+        self.suspicious_patterns = [
+            r'[a-f0-9]{16,}',  # Long hex strings
+            r'[A-Za-z0-9+/]{20,}={0,2}',  # Base64-like patterns
+            r'\d{10,}',  # Long numeric sequences
+        ]
+    
+    def analyze_patterns(self, df):
+        """Analyze DNS queries for tunneling patterns"""
+        results = []
+        
+        for _, row in df.iterrows():
+            query = row['query']
+            subdomain = row['subdomain']
+            
+            # Check various indicators
+            indicators = {
+                'high_entropy': row.get('entropy', 0) > self.entropy_threshold,
+                'long_subdomain': len(subdomain) > self.length_threshold,
+                'suspicious_pattern': any(re.search(pattern, subdomain) for pattern in self.suspicious_patterns),
+                'high_digit_ratio': self.calculate_digit_ratio(subdomain) > 0.5,
+                'low_vowel_ratio': self.calculate_vowel_ratio(subdomain) < 0.1,
+                'ml_anomaly': row.get('is_anomaly', False)
+            }
+            
+            # Calculate suspicion score
+            suspicion_score = sum(indicators.values())
+            
+            results.append({
+                'query': query,
+                'subdomain': subdomain,
+                'entropy': row.get('entropy', 0),
+                'length': len(subdomain),
+                'suspicion_score': suspicion_score,
+                'is_suspicious': suspicion_score >= 3,
+                **indicators
+            })
+        
+        return pd.DataFrame(results)
+    
+    def calculate_digit_ratio(self, text):
+        """Calculate ratio of digits in text"""
+        if len(text) == 0:
+            return 0
+        return sum(c.isdigit() for c in text) / len(text)
+    
+    def calculate_vowel_ratio(self, text):
+        """Calculate ratio of vowels in text"""
+        if len(text) == 0:
+            return 0
+        vowels = 'aeiouAEIOU'
+        return sum(c in vowels for c in text) / len(text)
+    
+    def generate_report(self, df):
+        """Generate comprehensive analysis report"""
+        suspicious = df[df['is_suspicious']]
+        
+        print("DNS Tunneling Detection Report")
+        print("=" * 50)
+        print(f"Total queries analyzed: {len(df)}")
+        print(f"Suspicious queries detected: {len(suspicious)}")
+        print(f"Suspicion rate: {len(suspicious)/len(df)*100:.1f}%")
+        
+        if len(suspicious) > 0:
+            print("\nSuspicious Queries:")
+            print("-" * 30)
+            for _, row in suspicious.iterrows():
+                print(f"Query: {row['query']}")
+                print(f"  Entropy: {row['entropy']:.2f}")
+                print(f"  Length: {row['length']}")
+                print(f"  Suspicion Score: {row['suspicion_score']}/6")
+                
+                indicators = []
+                if row['high_entropy']: indicators.append("High Entropy")
+                if row['long_subdomain']: indicators.append("Long Subdomain")
+                if row['suspicious_pattern']: indicators.append("Suspicious Pattern")
+                if row['high_digit_ratio']: indicators.append("High Digit Ratio")
+                if row['low_vowel_ratio']: indicators.append("Low Vowel Ratio")
+                if row['ml_anomaly']: indicators.append("ML Anomaly")
+                
+                print(f"  Indicators: {', '.join(indicators)}")
+                print()
+        
+        # Statistics
+        print("Analysis Statistics:")
+        print("-" * 20)
+        print(f"Average entropy: {df['entropy'].mean():.2f}")
+        print(f"Average length: {df['length'].mean():.1f}")
+        print(f"High entropy queries (>{self.entropy_threshold}): {sum(df['high_entropy'])}")
+        print(f"Long subdomain queries (>{self.length_threshold}): {sum(df['long_subdomain'])}")
+        print(f"ML detected anomalies: {sum(df['ml_anomaly'])}")
+
+if __name__ == "__main__":
+    # Load analysis results
+    try:
+        df = pd.read_csv('anomaly_detection_results.csv')
+    except FileNotFoundError:
+        try:
+            df = pd.read_csv('dns_entropy_results.csv')
+            df['is_anomaly'] = False  # Add default values
+        except FileNotFoundError:
+            print("No analysis results found. Please run previous steps first.")
+            exit(1)
+    
+    # Initialize detector
+    detector = DNSTunnelingDetector()
+    
+    # Analyze patterns
+    pattern_results = detector.analyze_patterns(df)
+    
+    # Generate report
+    detector.generate_report(pattern_results)
+    
+    # Save results
+    pattern_results.to_csv('tunneling_detection_results.csv', index=False)
+    print(f"\nDetailed results saved to 'tunneling_detection_results.csv'")
+EOF
+
+chmod +x pattern_analyzer.py
+Subtask 3.2: Run Pattern Analysis
+# Run comprehensive pattern analysis
+python3 pattern_analyzer.py
+Subtask 3.3: Create Visualization Script
+# Create visualizer.py
+cat > visualizer.py << 'EOF'
+#!/usr/bin/env python3
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+def create_visualizations():
+    """Create visualizations for DNS tunneling analysis"""
+    try:
+        df = pd.read_csv('tunneling_detection_results.csv')
+    except FileNotFoundError:
+        print("No results file found. Please run analysis first.")
+        return
+    
+    # Create figure with subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # 1. Entropy distribution
+    normal = df[~df['is_suspicious']]['entropy']
+    suspicious = df[df['is_suspicious']]['entropy']
+    
+    ax1.hist(normal, bins=20, alpha=0.7, label='Normal', color='blue')
+    ax1.hist(suspicious, bins=20, alpha=0.7, label='Suspicious', color='red')
+    ax1.set_xlabel('Entropy')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Entropy Distribution')
+    ax1.legend()
+    
+    # 2. Length vs Entropy scatter
+    colors = ['red' if x else 'blue' for x in df['is_suspicious']]
+    ax2.scatter(df['length'], df['entropy'], c=colors, alpha=0.6)
+    ax2.set_xlabel('Subdomain Length')
+    ax2.set_ylabel('Entropy')
+    ax2.set_title('Length vs Entropy')
+    
+    # 3. Suspicion score distribution
+    ax3.hist(df['suspicion_score'], bins=range(8), alpha=0.7, color='orange')
+    ax3.set_xlabel('Suspicion Score')
+    ax3.set_ylabel('Frequency')
+    ax3.set_title('Suspicion Score Distribution')
+    
+    # 4. Detection indicators
+    indicators = ['high_entropy', 'long_subdomain', 'suspicious_pattern', 
+                 'high_digit_ratio', 'low_vowel_ratio', 'ml_anomaly']
+    counts = [sum(df[indicator]) for indicator in indicators]
+    
+    ax4.bar(range(len(indicators)), counts, color='green', alpha=0.7)
+    ax4.set_xlabel('Detection Indicators')
+    ax4.set_ylabel('Count')
+    ax4.set_title('Detection Indicators Frequency')
+    ax4.set_xticks(range(len(indicators)))
+    ax4.set_xticklabels([i.replace('_', '\n') for i in indicators], rotation=45)
+    
+    plt.tight_layout()
+    plt.savefig('dns_tunneling_analysis.png', dpi=300, bbox_inches='tight')
+    print("Visualization saved as 'dns_tunneling_analysis.png'")
+    
+    # Display summary statistics
+    print("\nSummary Statistics:")
+    print("=" * 30)
+    print(f"Total queries: {len(df)}")
+    print(f"Suspicious queries: {sum(df['is_suspicious'])}")
+    print(f"Detection rate: {sum(df['is_suspicious'])/len(df)*100:.1f}%")
+    print(f"Average entropy (normal): {df[~df['is_suspicious']]['entropy'].mean():.2f}")
+    print(f"Average entropy (suspicious): {df[df['is_suspicious']]['entropy'].mean():.2f}")
+
+if __name__ == "__main__":
+    create_visualizations()
+EOF
+
+chmod +x visualizer.py
+Subtask 3.4: Generate Visualizations
+# Create visualizations (optional - requires display)
+python3 visualizer.py
+Verification and Testing
+Test the Complete Pipeline
+# Create a comprehensive test script
+cat > test_pipeline.py << 'EOF'
+#!/usr/bin/env python3
+import subprocess
+import os
+
+def test_pipeline():
+    """Test the complete DNS tunneling detection pipeline"""
+    print("Testing DNS Tunneling Detection Pipeline")
+    print("=" * 50)
+    
+    # Check if all required files exist
+    required_files = [
+        'dns_traffic_generator.py',
+        'entropy_analyzer.py', 
+        'ml_anomaly_detector.py',
+        'pattern_analyzer.py'
+    ]
+    
+    for file in required_files:
+        if os.path.exists(file):
+            print(f"✓ {file} exists")
+        else:
+            print(f"✗ {file} missing")
+            return False
+    
+    # Test each component
+    print("\nTesting components:")
+    
+    # Test traffic generation
+    print("1. Testing traffic generation...")
+    result = subprocess.run(['python3', 'dns_traffic_generator.py'], 
+                          capture_output=True, text=True)
+    if result.returncode == 0:
+        print("✓ Traffic generation successful")
+    else:
+        print("✗ Traffic generation failed")
+    
+    # Test entropy analysis
+    print("2. Testing entropy analysis...")
+    if os.path.exists('dns_traffic.pcap'):
+        result = subprocess.run(['python3', 'entropy_analyzer.py'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            print("✓ Entropy analysis successful")
+        else:
+            print("✗ Entropy analysis failed")
+    
+    # Test ML model
+    print("3. Testing ML anomaly detection...")
+    result = subprocess.run(['python3', 'ml_anomaly_detector.py'], 
+                          capture_output=True, text=True)
+    if result.returncode == 0:
+        print("✓ ML model training successful")
+    else:
+        print("✗ ML model training failed")
+    
+    # Test pattern analysis
+    print("4. Testing pattern analysis...")
+    result = subprocess.run(['python3', 'pattern_analyzer.py'], 
+                          capture_output=True, text=True)
+    if result.returncode == 0:
+        print("✓ Pattern analysis successful")
+    else:
+        print("✗ Pattern analysis failed")
+    
+    print("\nPipeline test complete!")
+    return True
+
+if __name__ == "__main__":
+    test_pipeline()
+EOF
+
+python3 test_pipeline.py
+Conclusion
+In this lab, you successfully implemented a comprehensive DNS tunneling detection system using entropy analysis and machine learning. You accomplished:
+
+Traffic Analysis: Captured and analyzed DNS traffic to identify suspicious patterns
+Entropy Calculation: Implemented Shannon entropy analysis to detect high-randomness DNS queries
+Machine Learning: Built and trained an Isolation Forest anomaly detection model
+Pattern Recognition: Created a multi-factor scoring system to identify potential DNS tunneling
+Comprehensive Detection: Combined statistical analysis with ML techniques for robust detection
+This approach is crucial for cybersecurity professionals as DNS tunneling is a common technique used by attackers to exfiltrate data and maintain command-and-control communications while bypassing traditional network security measures. The combination of entropy analysis and machine learning provides a powerful defense mechanism against these sophisticated attacks.
+
+The skills learned here apply directly to network security monitoring, threat hunting, and building automated detection systems in enterprise environments.
