@@ -1,0 +1,9 @@
+subject,body,sender,is_phishing
+"Urgent: Verify Your Account","Dear Customer, Your account will be suspended. Click here to verify: http://fake-bank.com/verify",suspicious@fake-bank.com,1
+"Meeting Tomorrow","Hi John, Don't forget about our meeting tomorrow at 2 PM. Best regards, Sarah",sarah@company.com,0
+"Congratulations! You've Won!","You have won $1,000,000! Click here to claim your prize: http://scam-lottery.com",winner@lottery-scam.com,1
+"Project Update","The quarterly report is ready for review. Please find the attached document.",manager@realcompany.com,0
+"URGENT: Security Alert","Your PayPal account has been compromised. Verify immediately: http://paypal-fake.net",security@paypal-fake.net,1
+"Weekly Newsletter","This week's company updates and announcements are now available.",newsletter@company.com,0
+"Bank Account Suspended","Your account is frozen. Update your information: http://bank-phish.com/update",alert@bank-phish.com,1
+"Lunch Plans","Are you free for lunch today? Let me know!",friend@email.com,0
