@@ -1,0 +1,927 @@
+NLP-Based Phishing Detection in SMTP Traffic (Using spaCy + ML Pipelines)
+Learning Objectives
+By completing this lab, you will:
+
+Extract and analyze email data from SMTP traffic captures
+Implement spaCy for natural language processing of email content
+Build and train machine learning models to detect phishing attempts
+Create an automated phishing detection pipeline using NLP features
+Prerequisites
+Basic understanding of Python programming
+Familiarity with machine learning concepts
+Knowledge of network protocols (SMTP basics)
+Linux command line experience
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required software during the lab.
+
+Task 1: Environment Setup and Data Preparation
+Subtask 1.1: Install Required Tools
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and pip
+sudo apt install python3 python3-pip python3-venv -y
+
+# Create virtual environment
+python3 -m venv nlp_phishing_env
+source nlp_phishing_env/bin/activate
+
+# Install required Python packages
+pip install spacy scikit-learn pandas numpy matplotlib seaborn scapy email-validator
+pip install jupyter notebook
+
+# Download spaCy English model
+python -m spacy download en_core_web_sm
+Subtask 1.2: Create Sample SMTP Traffic Data
+# Create project directory
+mkdir ~/phishing_detection_lab
+cd ~/phishing_detection_lab
+
+# Create sample email dataset
+cat > sample_emails.csv << 'EOF'
+subject,body,sender,is_phishing
+"Urgent: Verify Your Account","Dear Customer, Your account will be suspended. Click here to verify: http://fake-bank.com/verify",suspicious@fake-bank.com,1
+"Meeting Tomorrow","Hi John, Don't forget about our meeting tomorrow at 2 PM. Best regards, Sarah",sarah@company.com,0
+"Congratulations! You've Won!","You have won $1,000,000! Click here to claim your prize: http://scam-lottery.com",winner@lottery-scam.com,1
+"Project Update","The quarterly report is ready for review. Please find the attached document.",manager@realcompany.com,0
+"URGENT: Security Alert","Your PayPal account has been compromised. Verify immediately: http://paypal-fake.net",security@paypal-fake.net,1
+"Weekly Newsletter","This week's company updates and announcements are now available.",newsletter@company.com,0
+"Bank Account Suspended","Your account is frozen. Update your information: http://bank-phish.com/update",alert@bank-phish.com,1
+"Lunch Plans","Are you free for lunch today? Let me know!",friend@email.com,0
+EOF
+Subtask 1.3: Create SMTP Traffic Simulation Script
+# Create smtp_traffic_generator.py
+cat > smtp_traffic_generator.py << 'EOF'
+import pandas as pd
+import json
+import random
+from datetime import datetime, timedelta
+
+def generate_smtp_traffic():
+    """Generate simulated SMTP traffic with email data"""
+    
+    # Load sample emails
+    emails_df = pd.read_csv('sample_emails.csv')
+    
+    smtp_traffic = []
+    
+    for index, row in emails_df.iterrows():
+        # Simulate SMTP packet data
+        packet = {
+            'timestamp': (datetime.now() - timedelta(hours=random.randint(1, 24))).isoformat(),
+            'src_ip': f"192.168.1.{random.randint(10, 100)}",
+            'dst_ip': "192.168.1.25",  # Mail server
+            'src_port': random.randint(1024, 65535),
+            'dst_port': 25,
+            'protocol': 'SMTP',
+            'email_data': {
+                'from': row['sender'],
+                'to': f"user{random.randint(1, 10)}@company.com",
+                'subject': row['subject'],
+                'body': row['body'],
+                'message_id': f"<{random.randint(100000, 999999)}@mail.server.com>"
+            },
+            'is_phishing': row['is_phishing']
+        }
+        smtp_traffic.append(packet)
+    
+    # Save to JSON file
+    with open('smtp_traffic.json', 'w') as f:
+        json.dump(smtp_traffic, f, indent=2)
+    
+    print(f"Generated {len(smtp_traffic)} SMTP traffic entries")
+    return smtp_traffic
+
+if __name__ == "__main__":
+    generate_smtp_traffic()
+EOF
+
+# Run the traffic generator
+python smtp_traffic_generator.py
+Task 2: Implement spaCy for NLP Analysis
+Subtask 2.1: Create Email Text Processor
+# Create nlp_processor.py
+cat > nlp_processor.py << 'EOF'
+import spacy
+import pandas as pd
+import json
+import re
+from collections import Counter
+
+class EmailNLPProcessor:
+    def __init__(self):
+        # Load spaCy model
+        self.nlp = spacy.load("en_core_web_sm")
+        
+        # Define phishing keywords
+        self.phishing_keywords = [
+            'urgent', 'verify', 'suspended', 'click here', 'winner', 'congratulations',
+            'claim', 'prize', 'frozen', 'compromised', 'security alert', 'update',
+            'confirm', 'expire', 'limited time', 'act now', 'free money'
+        ]
+        
+        # Suspicious domains
+        self.suspicious_domains = [
+            'fake-bank.com', 'scam-lottery.com', 'paypal-fake.net', 
+            'bank-phish.com', 'secure-update.net'
+        ]
+    
+    def extract_features(self, email_text, sender_email):
+        """Extract NLP features from email text"""
+        
+        # Combine subject and body for analysis
+        full_text = email_text.lower()
+        
+        # Process with spaCy
+        doc = self.nlp(full_text)
+        
+        features = {}
+        
+        # Basic text statistics
+        features['text_length'] = len(full_text)
+        features['word_count'] = len([token for token in doc if not token.is_space])
+        features['sentence_count'] = len(list(doc.sents))
+        
+        # Linguistic features
+        features['exclamation_count'] = full_text.count('!')
+        features['question_count'] = full_text.count('?')
+        features['caps_ratio'] = sum(1 for c in full_text if c.isupper()) / len(full_text) if full_text else 0
+        
+        # URL detection
+        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        urls = re.findall(url_pattern, email_text)
+        features['url_count'] = len(urls)
+        features['has_suspicious_url'] = any(domain in url for url in urls for domain in self.suspicious_domains)
+        
+        # Phishing keyword detection
+        keyword_count = sum(1 for keyword in self.phishing_keywords if keyword in full_text)
+        features['phishing_keyword_count'] = keyword_count
+        features['phishing_keyword_ratio'] = keyword_count / features['word_count'] if features['word_count'] > 0 else 0
+        
+        # Named entity recognition
+        entities = [ent.label_ for ent in doc.ents]
+        entity_counter = Counter(entities)
+        features['person_entities'] = entity_counter.get('PERSON', 0)
+        features['org_entities'] = entity_counter.get('ORG', 0)
+        features['money_entities'] = entity_counter.get('MONEY', 0)
+        
+        # Sender domain analysis
+        sender_domain = sender_email.split('@')[-1] if '@' in sender_email else ''
+        features['sender_domain_suspicious'] = sender_domain in self.suspicious_domains
+        features['sender_domain_length'] = len(sender_domain)
+        
+        # Sentiment and urgency indicators
+        urgency_words = ['urgent', 'immediate', 'asap', 'quickly', 'hurry', 'deadline']
+        features['urgency_score'] = sum(1 for word in urgency_words if word in full_text)
+        
+        return features
+    
+    def process_smtp_traffic(self, traffic_file):
+        """Process SMTP traffic and extract features"""
+        
+        with open(traffic_file, 'r') as f:
+            traffic_data = json.load(f)
+        
+        processed_data = []
+        
+        for packet in traffic_data:
+            email_data = packet['email_data']
+            
+            # Combine subject and body
+            email_text = f"{email_data['subject']} {email_data['body']}"
+            
+            # Extract features
+            features = self.extract_features(email_text, email_data['from'])
+            
+            # Add metadata
+            features['timestamp'] = packet['timestamp']
+            features['sender'] = email_data['from']
+            features['subject'] = email_data['subject']
+            features['is_phishing'] = packet['is_phishing']
+            
+            processed_data.append(features)
+        
+        return pd.DataFrame(processed_data)
+
+if __name__ == "__main__":
+    processor = EmailNLPProcessor()
+    df = processor.process_smtp_traffic('smtp_traffic.json')
+    
+    print("NLP Feature Extraction Complete!")
+    print(f"Processed {len(df)} emails")
+    print("\nFeature columns:")
+    print(df.columns.tolist())
+    
+    # Save processed data
+    df.to_csv('processed_email_features.csv', index=False)
+    print("\nProcessed data saved to 'processed_email_features.csv'")
+EOF
+
+# Run the NLP processor
+python nlp_processor.py
+Subtask 2.2: Analyze NLP Features
+# Create feature_analysis.py
+cat > feature_analysis.py << 'EOF'
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def analyze_features():
+    """Analyze extracted NLP features"""
+    
+    # Load processed data
+    df = pd.read_csv('processed_email_features.csv')
+    
+    print("=== Email Dataset Analysis ===")
+    print(f"Total emails: {len(df)}")
+    print(f"Phishing emails: {df['is_phishing'].sum()}")
+    print(f"Legitimate emails: {len(df) - df['is_phishing'].sum()}")
+    
+    # Feature statistics by class
+    print("\n=== Feature Statistics ===")
+    numeric_features = ['text_length', 'word_count', 'exclamation_count', 
+                       'url_count', 'phishing_keyword_count', 'urgency_score']
+    
+    for feature in numeric_features:
+        phishing_mean = df[df['is_phishing'] == 1][feature].mean()
+        legitimate_mean = df[df['is_phishing'] == 0][feature].mean()
+        print(f"{feature}:")
+        print(f"  Phishing: {phishing_mean:.2f}")
+        print(f"  Legitimate: {legitimate_mean:.2f}")
+    
+    # Create visualizations
+    plt.figure(figsize=(15, 10))
+    
+    # Plot 1: Feature distribution
+    plt.subplot(2, 3, 1)
+    df.boxplot(column='phishing_keyword_count', by='is_phishing', ax=plt.gca())
+    plt.title('Phishing Keywords by Email Type')
+    plt.suptitle('')
+    
+    # Plot 2: URL count distribution
+    plt.subplot(2, 3, 2)
+    df.boxplot(column='url_count', by='is_phishing', ax=plt.gca())
+    plt.title('URL Count by Email Type')
+    plt.suptitle('')
+    
+    # Plot 3: Text length distribution
+    plt.subplot(2, 3, 3)
+    df.boxplot(column='text_length', by='is_phishing', ax=plt.gca())
+    plt.title('Text Length by Email Type')
+    plt.suptitle('')
+    
+    # Plot 4: Urgency score
+    plt.subplot(2, 3, 4)
+    df.boxplot(column='urgency_score', by='is_phishing', ax=plt.gca())
+    plt.title('Urgency Score by Email Type')
+    plt.suptitle('')
+    
+    # Plot 5: Exclamation count
+    plt.subplot(2, 3, 5)
+    df.boxplot(column='exclamation_count', by='is_phishing', ax=plt.gca())
+    plt.title('Exclamation Count by Email Type')
+    plt.suptitle('')
+    
+    # Plot 6: Correlation heatmap
+    plt.subplot(2, 3, 6)
+    correlation_features = numeric_features + ['is_phishing']
+    corr_matrix = df[correlation_features].corr()
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, ax=plt.gca())
+    plt.title('Feature Correlation Matrix')
+    
+    plt.tight_layout()
+    plt.savefig('nlp_feature_analysis.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print("\nAnalysis complete! Visualization saved as 'nlp_feature_analysis.png'")
+
+if __name__ == "__main__":
+    analyze_features()
+EOF
+
+# Run feature analysis
+python feature_analysis.py
+Task 3: Build and Train ML Models for Phishing Detection
+Subtask 3.1: Create ML Pipeline
+# Create ml_phishing_detector.py
+cat > ml_phishing_detector.py << 'EOF'
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.preprocessing import StandardScaler
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+class PhishingDetector:
+    def __init__(self):
+        self.models = {
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
+            'SVM': SVC(random_state=42, probability=True)
+        }
+        self.scaler = StandardScaler()
+        self.best_model = None
+        self.feature_names = None
+    
+    def prepare_features(self, df):
+        """Prepare features for ML training"""
+        
+        # Select relevant features
+        feature_columns = [
+            'text_length', 'word_count', 'sentence_count',
+            'exclamation_count', 'question_count', 'caps_ratio',
+            'url_count', 'has_suspicious_url', 'phishing_keyword_count',
+            'phishing_keyword_ratio', 'person_entities', 'org_entities',
+            'money_entities', 'sender_domain_suspicious', 'sender_domain_length',
+            'urgency_score'
+        ]
+        
+        # Convert boolean columns to int
+        df['has_suspicious_url'] = df['has_suspicious_url'].astype(int)
+        df['sender_domain_suspicious'] = df['sender_domain_suspicious'].astype(int)
+        
+        X = df[feature_columns]
+        y = df['is_phishing']
+        
+        self.feature_names = feature_columns
+        
+        return X, y
+    
+    def train_models(self, X, y):
+        """Train multiple ML models and compare performance"""
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        results = {}
+        
+        print("=== Model Training and Evaluation ===")
+        
+        for name, model in self.models.items():
+            print(f"\nTraining {name}...")
+            
+            # Train model
+            if name == 'SVM':
+                model.fit(X_train_scaled, y_train)
+                y_pred = model.predict(X_test_scaled)
+                y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+            else:
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                y_pred_proba = model.predict_proba(X_test)[:, 1]
+            
+            # Evaluate model
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Cross-validation
+            if name == 'SVM':
+                cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
+            else:
+                cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+            
+            results[name] = {
+                'model': model,
+                'accuracy': accuracy,
+                'cv_mean': cv_scores.mean(),
+                'cv_std': cv_scores.std(),
+                'y_test': y_test,
+                'y_pred': y_pred,
+                'y_pred_proba': y_pred_proba
+            }
+            
+            print(f"Accuracy: {accuracy:.4f}")
+            print(f"CV Score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+            print("\nClassification Report:")
+            print(classification_report(y_test, y_pred))
+        
+        # Select best model
+        best_model_name = max(results.keys(), key=lambda k: results[k]['cv_mean'])
+        self.best_model = results[best_model_name]['model']
+        
+        print(f"\nBest Model: {best_model_name}")
+        
+        return results, X_test, y_test
+    
+    def visualize_results(self, results):
+        """Visualize model performance"""
+        
+        plt.figure(figsize=(15, 10))
+        
+        # Plot 1: Model comparison
+        plt.subplot(2, 3, 1)
+        model_names = list(results.keys())
+        accuracies = [results[name]['accuracy'] for name in model_names]
+        cv_scores = [results[name]['cv_mean'] for name in model_names]
+        
+        x = np.arange(len(model_names))
+        width = 0.35
+        
+        plt.bar(x - width/2, accuracies, width, label='Test Accuracy', alpha=0.8)
+        plt.bar(x + width/2, cv_scores, width, label='CV Score', alpha=0.8)
+        plt.xlabel('Models')
+        plt.ylabel('Score')
+        plt.title('Model Performance Comparison')
+        plt.xticks(x, model_names, rotation=45)
+        plt.legend()
+        
+        # Plot confusion matrices
+        for i, (name, result) in enumerate(results.items()):
+            plt.subplot(2, 3, i + 2)
+            cm = confusion_matrix(result['y_test'], result['y_pred'])
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=plt.gca())
+            plt.title(f'{name} - Confusion Matrix')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+        
+        plt.tight_layout()
+        plt.savefig('model_performance.png', dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    def feature_importance_analysis(self):
+        """Analyze feature importance"""
+        
+        if hasattr(self.best_model, 'feature_importances_'):
+            importances = self.best_model.feature_importances_
+            
+            # Create feature importance plot
+            plt.figure(figsize=(10, 8))
+            indices = np.argsort(importances)[::-1]
+            
+            plt.bar(range(len(importances)), importances[indices])
+            plt.title('Feature Importance (Random Forest)')
+            plt.xlabel('Features')
+            plt.ylabel('Importance')
+            plt.xticks(range(len(importances)), 
+                      [self.feature_names[i] for i in indices], 
+                      rotation=45, ha='right')
+            
+            plt.tight_layout()
+            plt.savefig('feature_importance.png', dpi=300, bbox_inches='tight')
+            plt.show()
+            
+            print("\n=== Top 10 Most Important Features ===")
+            for i in range(min(10, len(importances))):
+                idx = indices[i]
+                print(f"{i+1}. {self.feature_names[idx]}: {importances[idx]:.4f}")
+    
+    def save_model(self, filename='phishing_detector_model.pkl'):
+        """Save the trained model"""
+        
+        model_data = {
+            'model': self.best_model,
+            'scaler': self.scaler,
+            'feature_names': self.feature_names
+        }
+        
+        joblib.dump(model_data, filename)
+        print(f"\nModel saved as '{filename}'")
+    
+    def predict_email(self, email_features):
+        """Predict if an email is phishing"""
+        
+        # Ensure features are in correct order
+        feature_vector = [email_features.get(feature, 0) for feature in self.feature_names]
+        feature_vector = np.array(feature_vector).reshape(1, -1)
+        
+        # Scale if using SVM
+        if isinstance(self.best_model, SVC):
+            feature_vector = self.scaler.transform(feature_vector)
+        
+        prediction = self.best_model.predict(feature_vector)[0]
+        probability = self.best_model.predict_proba(feature_vector)[0]
+        
+        return {
+            'is_phishing': bool(prediction),
+            'phishing_probability': probability[1],
+            'legitimate_probability': probability[0]
+        }
+
+def main():
+    # Load processed data
+    df = pd.read_csv('processed_email_features.csv')
+    
+    # Initialize detector
+    detector = PhishingDetector()
+    
+    # Prepare features
+    X, y = detector.prepare_features(df)
+    
+    print("Feature preparation complete!")
+    print(f"Features shape: {X.shape}")
+    print(f"Target distribution: {y.value_counts().to_dict()}")
+    
+    # Train models
+    results, X_test, y_test = detector.train_models(X, y)
+    
+    # Visualize results
+    detector.visualize_results(results)
+    
+    # Feature importance analysis
+    detector.feature_importance_analysis()
+    
+    # Save model
+    detector.save_model()
+    
+    # Test prediction on sample
+    print("\n=== Sample Prediction ===")
+    sample_features = {
+        'text_length': 150,
+        'word_count': 25,
+        'sentence_count': 3,
+        'exclamation_count': 2,
+        'question_count': 0,
+        'caps_ratio': 0.1,
+        'url_count': 1,
+        'has_suspicious_url': 1,
+        'phishing_keyword_count': 3,
+        'phishing_keyword_ratio': 0.12,
+        'person_entities': 0,
+        'org_entities': 1,
+        'money_entities': 1,
+        'sender_domain_suspicious': 1,
+        'sender_domain_length': 15,
+        'urgency_score': 2
+    }
+    
+    prediction = detector.predict_email(sample_features)
+    print(f"Prediction: {'PHISHING' if prediction['is_phishing'] else 'LEGITIMATE'}")
+    print(f"Phishing Probability: {prediction['phishing_probability']:.4f}")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+# Run ML training
+python ml_phishing_detector.py
+Subtask 3.2: Create Real-time Detection System
+# Create realtime_detector.py
+cat > realtime_detector.py << 'EOF'
+import json
+import joblib
+import pandas as pd
+from nlp_processor import EmailNLPProcessor
+import time
+
+class RealtimePhishingDetector:
+    def __init__(self, model_path='phishing_detector_model.pkl'):
+        # Load trained model
+        model_data = joblib.load(model_path)
+        self.model = model_data['model']
+        self.scaler = model_data['scaler']
+        self.feature_names = model_data['feature_names']
+        
+        # Initialize NLP processor
+        self.nlp_processor = EmailNLPProcessor()
+        
+        print("Real-time Phishing Detector initialized!")
+    
+    def analyze_email(self, subject, body, sender):
+        """Analyze a single email for phishing"""
+        
+        # Extract NLP features
+        email_text = f"{subject} {body}"
+        features = self.nlp_processor.extract_features(email_text, sender)
+        
+        # Prepare feature vector
+        feature_vector = [features.get(feature, 0) for feature in self.feature_names]
+        feature_vector = pd.DataFrame([feature_vector], columns=self.feature_names)
+        
+        # Convert boolean columns
+        feature_vector['has_suspicious_url'] = feature_vector['has_suspicious_url'].astype(int)
+        feature_vector['sender_domain_suspicious'] = feature_vector['sender_domain_suspicious'].astype(int)
+        
+        # Make prediction
+        prediction = self.model.predict(feature_vector)[0]
+        probability = self.model.predict_proba(feature_vector)[0]
+        
+        result = {
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'subject': subject,
+            'sender': sender,
+            'is_phishing': bool(prediction),
+            'phishing_probability': float(probability[1]),
+            'confidence': 'HIGH' if max(probability) > 0.8 else 'MEDIUM' if max(probability) > 0.6 else 'LOW',
+            'features': features
+        }
+        
+        return result
+    
+    def monitor_smtp_traffic(self, traffic_file):
+        """Monitor SMTP traffic for phishing attempts"""
+        
+        print("=== Real-time SMTP Traffic Monitoring ===")
+        print("Analyzing emails for phishing attempts...\n")
+        
+        with open(traffic_file, 'r') as f:
+            traffic_data = json.load(f)
+        
+        phishing_detected = 0
+        total_emails = len(traffic_data)
+        
+        for i, packet in enumerate(traffic_data):
+            email_data = packet['email_data']
+            
+            # Analyze email
+            result = self.analyze_email(
+                email_data['subject'],
+                email_data['body'],
+                email_data['from']
+            )
+            
+            # Display results
+            print(f"Email {i+1}/{total_emails}")
+            print(f"From: {result['sender']}")
+            print(f"Subject: {result['subject'][:50]}...")
+            print(f"Prediction: {'🚨 PHISHING' if result['is_phishing'] else '✅ LEGITIMATE'}")
+            print(f"Confidence: {result['confidence']} ({result['phishing_probability']:.3f})")
+            
+            if result['is_phishing']:
+                phishing_detected += 1
+                print("⚠️  ALERT: Potential phishing email detected!")
+                
+                # Show key indicators
+                features = result['features']
+                indicators = []
+                if features['phishing_keyword_count'] > 0:
+                    indicators.append(f"Phishing keywords: {features['phishing_keyword_count']}")
+                if features['url_count'] > 0:
+                    indicators.append(f"URLs found: {features['url_count']}")
+                if features['has_suspicious_url']:
+                    indicators.append("Suspicious URL detected")
+                if features['urgency_score'] > 0:
+                    indicators.append(f"Urgency indicators: {features['urgency_score']}")
+                
+                if indicators:
+                    print(f"Key indicators: {', '.join(indicators)}")
+            
+            print("-" * 60)
+            
+            # Simulate real-time processing delay
+            time.sleep(0.5)
+        
+        print(f"\n=== Monitoring Summary ===")
+        print(f"Total emails analyzed: {total_emails}")
+        print(f"Phishing attempts detected: {phishing_detected}")
+        print(f"Detection rate: {(phishing_detected/total_emails)*100:.1f}%")
+    
+    def interactive_email_checker(self):
+        """Interactive email checker"""
+        
+        print("\n=== Interactive Email Phishing Checker ===")
+        print("Enter email details to check for phishing (type 'quit' to exit)")
+        
+        while True:
+            print("\n" + "="*50)
+            sender = input("Sender email: ").strip()
+            if sender.lower() == 'quit':
+                break
+                
+            subject = input("Subject: ").strip()
+            if subject.lower() == 'quit':
+                break
+                
+            body = input("Body: ").strip()
+            if body.lower() == 'quit':
+                break
+            
+            # Analyze email
+            result = self.analyze_email(subject, body, sender)
+            
+            print(f"\n📧 Analysis Result:")
+            print(f"Prediction: {'🚨 PHISHING' if result['is_phishing'] else '✅ LEGITIMATE'}")
+            print(f"Confidence: {result['confidence']}")
+            print(f"Phishing Probability: {result['phishing_probability']:.3f}")
+            
+            if result['is_phishing']:
+                print("\n⚠️  Warning Signs Detected:")
+                features = result['features']
+                if features['phishing_keyword_count'] > 0:
+                    print(f"• Contains {features['phishing_keyword_count']} phishing keywords")
+                if features['url_count'] > 0:
+                    print(f"• Contains {features['url_count']} URLs")
+                if features['has_suspicious_url']:
+                    print("• Contains suspicious URLs")
+                if features['urgency_score'] > 0:
+                    print(f"• High urgency language detected (score: {features['urgency_score']})")
+                if features['exclamation_count'] > 2:
+                    print(f"• Excessive exclamation marks ({features['exclamation_count']})")
+
+def main():
+    try:
+        # Initialize detector
+        detector = RealtimePhishingDetector()
+        
+        # Monitor SMTP traffic
+        detector.monitor_smtp_traffic('smtp_traffic.json')
+        
+        # Interactive checker
+        detector.interactive_email_checker()
+        
+    except FileNotFoundError:
+        print("Error: Model file not found. Please run ml_phishing_detector.py first.")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+# Run real-time detector
+python realtime_detector.py
+Subtask 3.3: Create Detection Dashboard
+# Create detection_dashboard.py
+cat > detection_dashboard.py << 'EOF'
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import json
+from datetime import datetime, timedelta
+import numpy as np
+
+def create_detection_dashboard():
+    """Create a comprehensive detection dashboard"""
+    
+    # Load processed data
+    df = pd.read_csv('processed_email_features.csv')
+    
+    # Create dashboard
+    fig, axes = plt.subplots(3, 3, figsize=(20, 15))
+    fig.suptitle('Phishing Detection Dashboard', fontsize=16, fontweight='bold')
+    
+    # 1. Email Classification Distribution
+    ax1 = axes[0, 0]
+    labels = ['Legitimate', 'Phishing']
+    sizes = [len(df) - df['is_phishing'].sum(), df['is_phishing'].sum()]
+    colors = ['#2ecc71', '#e74c3c']
+    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+    ax1.set_title('Email Classification Distribution')
+    
+    # 2. Phishing Keywords Distribution
+    ax2 = axes[0, 1]
+    phishing_emails = df[df['is_phishing'] == 1]
+    legitimate_emails = df[df['is_phishing'] == 0]
+    
+    ax2.hist([legitimate_emails['phishing_keyword_count'], phishing_emails['phishing_keyword_count']], 
+             bins=10, alpha=0.7, label=['Legitimate', 'Phishing'], color=['#2ecc71', '#e74c3c'])
+    ax2.set_xlabel('Phishing Keyword Count')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Phishing Keywords Distribution')
+    ax2.legend()
+    
+    # 3. URL Analysis
+    ax3 = axes[0, 2]
+    url_data = df.groupby('is_phishing')['url_count'].mean()
+    ax3.bar(['Legitimate', 'Phishing'], url_data.values, color=['#2ecc71', '#e74c3c'])
+    ax3.set_ylabel('Average URL Count')
+    ax3.set_title('Average URLs per Email Type')
+    
+    # 4. Text Length Analysis
+    ax4 = axes[1, 0]
+    ax4.boxplot([legitimate_emails['text_length'], phishing_emails['text_length']], 
+                labels=['Legitimate', 'Phishing'])
+    ax4.set_ylabel('Text Length')
+    ax4.set_title('Text Length Distribution')
+    
+    # 5. Urgency Score Analysis
+    ax5 = axes[1, 1]
+    urgency_data = df.groupby('is_phishing')['urgency_score'].mean()
+    ax5.bar(['Legitimate', 'Phishing'], urgency_data.values, color=['#2ecc71', '#e74c3c'])
+    ax5.set_ylabel('Average Urgency Score')
+    ax5.set_title('Urgency Language Analysis')
+    
+    # 6. Suspicious Domain Analysis
+    ax6 = axes[1, 2]
+    suspicious_domain_data = df.groupby('is_phishing')['sender_domain_suspicious'].sum()
+    ax6.bar(['Legitimate', 'Phishing'], suspicious_domain_data.values, color=['#2ecc71', '#e74c3c'])
+    ax6.set_ylabel('Count of Suspicious Domains')
+    ax6.set_title('Suspicious Sender Domains')
+    
+    # 7. Feature Correlation Heatmap
+    ax7 = axes[2, 0]
+    correlation_features = ['phishing_keyword_count', 'url_count', 'urgency_score', 
+                           'exclamation_count', 'text_length', 'is_phishing']
+    corr_matrix = df[correlation_features].corr()
+    sns.heatmap(corr_matrix, annot=True, cmap='RdYlBu_r', center=0, ax=ax7, 
+                square=True, fmt='.2f')
+    ax7.set_title('Feature Correlation Matrix')
+    
+    # 8. Detection Timeline (simulated)
+    ax8 = axes[2, 1]
+    # Create simulated timeline data
+    dates = pd.date_range(start='2024-01-01', periods=30, freq='D')
+    phishing_counts = np.random.poisson(2, 30)  # Simulate phishing detection counts
+    legitimate_counts = np.random.poisson(8, 30)  # Simulate legitimate email counts
+    
+    ax8.plot(dates, phishing_counts, color='#e74c3c', marker='o', label='Phishing Detected')
+    ax8.plot(dates, legitimate_counts, color='#2ecc71', marker='s', label='Legitimate Emails')
+    ax8.set_xlabel('Date')
+    ax8.set_ylabel('Email Count')
+    ax8.set_title('Daily Email Detection Timeline')
+    ax8.legend()
+    ax8.tick_params(axis='x', rotation=45)
+    
+    # 9. Risk Score Distribution
+    ax9 = axes[2, 2]
+    # Calculate risk scores based on features
+    df['risk_score'] = (
+        df['phishing_keyword_count'] * 0.3 +
+        df['url_count'] * 0.2 +
+        df['urgency_score'] * 0.2 +
+        df['has_suspicious_url'] * 0.3
+    )
+    
+    ax9.hist([legitimate_emails['risk_score'], phishing_emails['risk_score']], 
+             bins=15, alpha=0.7, label=['Legitimate', 'Phishing'], color=['#2ecc71', '#e74c3c'])
+    ax9.set_xlabel('Risk Score')
+    ax9.set_ylabel('Frequency')
+    ax9.set_title('Email Risk Score Distribution')
+    ax9.legend()
+    
+    plt.tight_layout()
+    plt.savefig('phishing_detection_dashboard.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Generate summary report
+    print("=== PHISHING DETECTION SUMMARY REPORT ===")
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Total Emails Analyzed: {len(df)}")
+    print(f"Phishing Emails Detected: {df['is_phishing'].sum()}")
+    print(f"Legitimate Emails: {len(df) - df['is_phishing'].sum()}")
+    print(f"Phishing Detection Rate: {(df['is_phishing'].sum() / len(df)) * 100:.1f}%")
+    
+    print("\n=== KEY STATISTICS ===")
+    print(f"Average Phishing Keywords (Phishing): {phishing_emails['phishing_keyword_count'].mean():.2f}")
+    print(f"Average Phishing Keywords (Legitimate): {legitimate_emails['phishing_keyword_count'].mean():.2f}")
+    print(f"Average URLs (Phishing): {phishing_emails['url_count'].mean():.2f}")
+    print(f"Average URLs (Legitimate): {legitimate_emails['url_count'].mean():.2f}")
+    print(f"Suspicious Domains in Phishing: {phishing_emails['sender_domain_suspicious'].sum()}")
+    print(f"Suspicious Domains in Legitimate: {legitimate_emails['sender_domain_suspicious'].sum()}")
+    
+    print("\n=== RISK ASSESSMENT ===")
+    high_risk = df[df['risk_score'] > 2]
+    medium_risk = df[(df['risk_score'] > 1) & (df['risk_score'] <= 2)]
+    low_risk = df[df['risk_score'] <= 1]
+    
+    print(f"High Risk Emails: {len(high_risk)} ({(len(high_risk)/len(df))*100:.1f}%)")
+    print(f"Medium Risk Emails: {len(medium_risk)} ({(len(medium_risk)/len(df))*100:.1f}%)")
+    print(f"Low Risk Emails: {len(low_risk)} ({(len(low_risk)/len(df))*100:.1f}%)")
+    
+    print("\nDashboard saved as 'phishing_detection_dashboard.png'")
+
+if __name__ == "__main__":
+    create_detection_dashboard()
+EOF
+
+# Run dashboard creation
+python detection_dashboard.py
+Lab Verification and Testing
+Verify Installation and Results
+# Check generated files
+echo "=== Generated Files ==="
+ls -la *.csv *.json *.pkl *.png *.py
+
+# Verify model performance
+echo -e "\n=== Model Files ==="
+file phishing_detector_model.pkl
+
+# Check visualizations
+echo -e "\n=== Generated Visualizations ==="
+ls -la *.png
+
+# Test the complete pipeline
+echo -e "\n=== Testing Complete Pipeline ==="
+python -c "
+import pandas as pd
+import joblib
+
+# Load and verify data
+df = pd.read_csv('processed_email_features.csv')
+print(f'Processed {len(df)} emails with {df.shape[1]} features')
+
+# Load and verify model
+model_data = joblib.load('phishing_detector_model.pkl')
+print(f'Model type: {type(model_data[\"model\"]).__name__}')
+print(f'Features: {len(model_data[\"feature_names\"])}')
+
+print('✅ Pipeline verification complete!')
+"
+Conclusion
+You have successfully completed Lab 8: NLP-Based Phishing Detection in SMTP Traffic. In this lab, you:
+
+Extracted email data from simulated SMTP traffic and prepared it for analysis
+Implemented spaCy NLP processing to extract linguistic features from email content including keyword detection, entity recognition, and text statistics
+Built and trained multiple ML models (Random Forest, Logistic Regression, SVM) to detect phishing attempts with performance comparison
+Created a real-time detection system capable of analyzing incoming emails and providing instant phishing assessments
+Developed visualization dashboards to monitor detection performance and analyze phishing patterns
+This lab demonstrates how Natural Language Processing combined with Machine Learning can effectively identify phishing attempts in email communications. The techniques learned here are directly applicable to cybersecurity roles in email security, threat detection, and automated security monitoring systems. The combination of linguistic analysis and machine learning provides a robust approach to identifying sophisticated phishing attacks that traditional rule-based systems might miss.
