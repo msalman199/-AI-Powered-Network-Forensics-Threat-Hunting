@@ -1,0 +1,8 @@
+cat > config/config.json << 'EOF'
+{
+    "gpt_model": "gpt-3.5-turbo",
+    "max_tokens": 500,
+    "temperature": 0.3,
+    "triage_prompt_template": "Analyze this security alert and provide triage recommendations:\n\nAlert Details:\n{alert_details}\n\nProvide:\n1. Risk Assessment (1-10)\n2. Recommended Action\n3. Reasoning\n4. Urgency Level",
+    "batch_size": 10
+}
