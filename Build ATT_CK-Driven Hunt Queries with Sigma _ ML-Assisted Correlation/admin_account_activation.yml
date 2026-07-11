@@ -1,0 +1,25 @@
+title: Administrator Account Activation
+id: 87654321-4321-4321-4321-210987654321
+status: experimental
+description: Detects activation of built-in administrator account
+references:
+    - https://attack.mitre.org/techniques/T1078/
+author: Threat Hunter
+date: 2024/01/15
+tags:
+    - attack.persistence
+    - attack.privilege_escalation
+    - attack.t1078
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\net.exe'
+        CommandLine|contains:
+            - 'user administrator'
+            - '/active:yes'
+    condition: selection
+falsepositives:
+    - Legitimate system administration
+level: high
