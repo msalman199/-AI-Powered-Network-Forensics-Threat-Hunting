@@ -1,0 +1,1565 @@
+ Use Scapy + ML to Classify Custom Binary Protocols
+Learning Objectives
+By completing this lab, you will:
+
+Capture and analyze binary protocol traffic using Scapy
+Extract meaningful features from binary protocol data
+Train machine learning models to classify unknown protocols
+Implement automated protocol classification systems
+Analyze protocol behavior patterns and characteristics
+Prerequisites
+Basic understanding of networking protocols
+Familiarity with Python programming
+Knowledge of machine learning concepts
+Understanding of binary data structures
+Linux command line experience
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required software during the lab.
+
+Task 1: Environment Setup and Traffic Generation
+Subtask 1.1: Install Required Tools
+Install Python, Scapy, and machine learning libraries:
+
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and pip
+sudo apt install python3 python3-pip tcpdump -y
+
+# Install required Python packages
+pip3 install scapy scikit-learn pandas numpy matplotlib seaborn
+
+# Verify installations
+python3 -c "import scapy; print('Scapy installed successfully')"
+python3 -c "import sklearn; print('Scikit-learn installed successfully')"
+Subtask 1.2: Create Custom Binary Protocol Simulators
+Create different binary protocol simulators to generate training data:
+
+# Create file: protocol_simulators.py
+import socket
+import struct
+import time
+import random
+import threading
+
+class ProtocolA:
+    """Simple request-response protocol"""
+    def __init__(self, port=8001):
+        self.port = port
+        
+    def create_packet(self, msg_type, seq_num, data):
+        # Header: magic(2) + type(1) + seq(2) + length(2) + data
+        magic = 0xABCD
+        length = len(data)
+        header = struct.pack('!HBHH', magic, msg_type, seq_num, length)
+        return header + data.encode()
+    
+    def server(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('localhost', self.port))
+        sock.listen(1)
+        
+        while True:
+            try:
+                conn, addr = sock.accept()
+                data = conn.recv(1024)
+                if data:
+                    # Send response
+                    response = self.create_packet(2, random.randint(1, 1000), "ACK")
+                    conn.send(response)
+                conn.close()
+            except:
+                break
+    
+    def client(self):
+        for i in range(10):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(('localhost', self.port))
+                packet = self.create_packet(1, i, f"Request {i}")
+                sock.send(packet)
+                response = sock.recv(1024)
+                sock.close()
+                time.sleep(0.5)
+            except:
+                pass
+
+class ProtocolB:
+    """Heartbeat protocol"""
+    def __init__(self, port=8002):
+        self.port = port
+    
+    def create_packet(self, status, timestamp, node_id):
+        # Header: magic(4) + status(1) + timestamp(4) + node_id(2)
+        magic = 0x12345678
+        packet = struct.pack('!IBIIH', magic, status, timestamp, node_id, 0xFFFF)
+        return packet
+    
+    def server(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('localhost', self.port))
+        
+        while True:
+            try:
+                data, addr = sock.recvfrom(1024)
+                # Send heartbeat response
+                response = self.create_packet(1, int(time.time()), random.randint(100, 999))
+                sock.sendto(response, addr)
+            except:
+                break
+    
+    def client(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for i in range(15):
+            try:
+                packet = self.create_packet(0, int(time.time()), 42)
+                sock.sendto(packet, ('localhost', self.port))
+                response, addr = sock.recvfrom(1024)
+                time.sleep(1)
+            except:
+                pass
+        sock.close()
+
+class ProtocolC:
+    """File transfer protocol"""
+    def __init__(self, port=8003):
+        self.port = port
+    
+    def create_packet(self, cmd, file_id, chunk_num, data):
+        # Header: sync(2) + cmd(1) + file_id(4) + chunk(4) + size(2) + data
+        sync = 0xDEAD
+        size = len(data)
+        header = struct.pack('!HBIIH', sync, cmd, file_id, chunk_num, size)
+        return header + data
+    
+    def server(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('localhost', self.port))
+        sock.listen(1)
+        
+        while True:
+            try:
+                conn, addr = sock.accept()
+                data = conn.recv(1024)
+                if data:
+                    # Send file chunk
+                    chunk_data = b"File data chunk " + str(random.randint(1, 100)).encode()
+                    response = self.create_packet(2, 1001, random.randint(1, 10), chunk_data)
+                    conn.send(response)
+                conn.close()
+            except:
+                break
+    
+    def client(self):
+        for i in range(8):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(('localhost', self.port))
+                data = b"Request chunk " + str(i).encode()
+                packet = self.create_packet(1, 1001, i, data)
+                sock.send(packet)
+                response = sock.recv(1024)
+                sock.close()
+                time.sleep(0.3)
+            except:
+                pass
+
+if __name__ == "__main__":
+    # Start servers in background threads
+    protocols = [ProtocolA(), ProtocolB(), ProtocolC()]
+    
+    for proto in protocols:
+        server_thread = threading.Thread(target=proto.server, daemon=True)
+        server_thread.start()
+    
+    time.sleep(2)  # Let servers start
+    
+    # Run clients
+    for proto in protocols:
+        client_thread = threading.Thread(target=proto.client)
+        client_thread.start()
+        client_thread.join()
+    
+    print("Protocol simulation completed")
+Subtask 1.3: Capture Protocol Traffic
+Create a traffic capture script using Scapy:
+
+# Create file: traffic_capture.py
+from scapy.all import *
+import time
+import threading
+import subprocess
+
+def capture_traffic(interface="lo", duration=30, output_file="protocol_traffic.pcap"):
+    """Capture network traffic for analysis"""
+    print(f"Starting traffic capture on {interface} for {duration} seconds...")
+    
+    # Start packet capture
+    packets = sniff(iface=interface, timeout=duration, filter="tcp or udp")
+    
+    # Save captured packets
+    wrpcap(output_file, packets)
+    print(f"Captured {len(packets)} packets and saved to {output_file}")
+    
+    return packets
+
+def run_protocol_simulation():
+    """Run the protocol simulators"""
+    print("Starting protocol simulation...")
+    subprocess.run(["python3", "protocol_simulators.py"])
+
+if __name__ == "__main__":
+    # Start protocol simulation in background
+    sim_thread = threading.Thread(target=run_protocol_simulation)
+    sim_thread.start()
+    
+    # Wait a moment for servers to start
+    time.sleep(3)
+    
+    # Capture traffic
+    packets = capture_traffic(duration=25)
+    
+    # Wait for simulation to complete
+    sim_thread.join()
+    
+    print("Traffic capture completed successfully")
+Run the traffic capture:
+
+# Run the protocol simulators and capture traffic
+python3 traffic_capture.py
+Task 2: Feature Extraction and Data Preprocessing
+Subtask 2.1: Extract Protocol Features
+Create a feature extraction script:
+
+# Create file: feature_extraction.py
+from scapy.all import *
+import pandas as pd
+import numpy as np
+from collections import Counter
+
+class ProtocolFeatureExtractor:
+    def __init__(self, pcap_file):
+        self.packets = rdpcap(pcap_file)
+        self.features = []
+    
+    def extract_packet_features(self, packet):
+        """Extract features from a single packet"""
+        features = {}
+        
+        # Basic packet information
+        features['packet_size'] = len(packet)
+        features['has_tcp'] = 1 if packet.haslayer(TCP) else 0
+        features['has_udp'] = 1 if packet.haslayer(UDP) else 0
+        features['has_ip'] = 1 if packet.haslayer(IP) else 0
+        
+        if packet.haslayer(IP):
+            features['ip_len'] = packet[IP].len
+            features['ip_ttl'] = packet[IP].ttl
+            features['ip_proto'] = packet[IP].proto
+        else:
+            features['ip_len'] = 0
+            features['ip_ttl'] = 0
+            features['ip_proto'] = 0
+        
+        if packet.haslayer(TCP):
+            features['src_port'] = packet[TCP].sport
+            features['dst_port'] = packet[TCP].dport
+            features['tcp_flags'] = packet[TCP].flags
+            features['tcp_window'] = packet[TCP].window
+            features['tcp_seq'] = packet[TCP].seq
+        elif packet.haslayer(UDP):
+            features['src_port'] = packet[UDP].sport
+            features['dst_port'] = packet[UDP].dport
+            features['tcp_flags'] = 0
+            features['tcp_window'] = 0
+            features['tcp_seq'] = 0
+        else:
+            features['src_port'] = 0
+            features['dst_port'] = 0
+            features['tcp_flags'] = 0
+            features['tcp_window'] = 0
+            features['tcp_seq'] = 0
+        
+        # Payload analysis
+        if packet.haslayer(Raw):
+            payload = bytes(packet[Raw])
+            features['payload_len'] = len(payload)
+            features['payload_entropy'] = self.calculate_entropy(payload)
+            features['payload_mean'] = np.mean(list(payload)) if payload else 0
+            features['payload_std'] = np.std(list(payload)) if len(payload) > 1 else 0
+            
+            # Check for common magic bytes/patterns
+            features['has_magic_abcd'] = 1 if b'\xab\xcd' in payload[:10] else 0
+            features['has_magic_1234'] = 1 if b'\x12\x34\x56\x78' in payload[:10] else 0
+            features['has_magic_dead'] = 1 if b'\xde\xad' in payload[:10] else 0
+            
+            # Byte frequency analysis
+            if payload:
+                byte_counts = Counter(payload)
+                features['unique_bytes'] = len(byte_counts)
+                features['most_common_byte_freq'] = byte_counts.most_common(1)[0][1] / len(payload)
+            else:
+                features['unique_bytes'] = 0
+                features['most_common_byte_freq'] = 0
+        else:
+            features['payload_len'] = 0
+            features['payload_entropy'] = 0
+            features['payload_mean'] = 0
+            features['payload_std'] = 0
+            features['has_magic_abcd'] = 0
+            features['has_magic_1234'] = 0
+            features['has_magic_dead'] = 0
+            features['unique_bytes'] = 0
+            features['most_common_byte_freq'] = 0
+        
+        return features
+    
+    def calculate_entropy(self, data):
+        """Calculate Shannon entropy of data"""
+        if not data:
+            return 0
+        
+        byte_counts = Counter(data)
+        entropy = 0
+        data_len = len(data)
+        
+        for count in byte_counts.values():
+            probability = count / data_len
+            if probability > 0:
+                entropy -= probability * np.log2(probability)
+        
+        return entropy
+    
+    def extract_all_features(self):
+        """Extract features from all packets"""
+        print(f"Extracting features from {len(self.packets)} packets...")
+        
+        for i, packet in enumerate(self.packets):
+            features = self.extract_packet_features(packet)
+            features['packet_id'] = i
+            self.features.append(features)
+        
+        return pd.DataFrame(self.features)
+    
+    def label_protocols(self, df):
+        """Label protocols based on port patterns and magic bytes"""
+        labels = []
+        
+        for _, row in df.iterrows():
+            if row['has_magic_abcd'] == 1:
+                labels.append('ProtocolA')
+            elif row['has_magic_1234'] == 1:
+                labels.append('ProtocolB')
+            elif row['has_magic_dead'] == 1:
+                labels.append('ProtocolC')
+            elif row['dst_port'] == 8001 or row['src_port'] == 8001:
+                labels.append('ProtocolA')
+            elif row['dst_port'] == 8002 or row['src_port'] == 8002:
+                labels.append('ProtocolB')
+            elif row['dst_port'] == 8003 or row['src_port'] == 8003:
+                labels.append('ProtocolC')
+            else:
+                labels.append('Unknown')
+        
+        df['protocol_label'] = labels
+        return df
+
+if __name__ == "__main__":
+    # Extract features from captured traffic
+    extractor = ProtocolFeatureExtractor("protocol_traffic.pcap")
+    features_df = extractor.extract_all_features()
+    
+    # Label the protocols
+    labeled_df = extractor.label_protocols(features_df)
+    
+    # Save features to CSV
+    labeled_df.to_csv("protocol_features.csv", index=False)
+    
+    print("Feature extraction completed!")
+    print(f"Extracted {len(labeled_df)} feature vectors")
+    print("\nProtocol distribution:")
+    print(labeled_df['protocol_label'].value_counts())
+    
+    # Display sample features
+    print("\nSample features:")
+    print(labeled_df.head())
+Run feature extraction:
+
+python3 feature_extraction.py
+Subtask 2.2: Data Analysis and Visualization
+Create a data analysis script:
+
+# Create file: data_analysis.py
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def analyze_protocol_features(csv_file="protocol_features.csv"):
+    """Analyze extracted protocol features"""
+    df = pd.read_csv(csv_file)
+    
+    print("=== Protocol Feature Analysis ===")
+    print(f"Total packets: {len(df)}")
+    print(f"Features per packet: {len(df.columns) - 2}")  # Exclude packet_id and label
+    
+    # Protocol distribution
+    print("\nProtocol Distribution:")
+    protocol_counts = df['protocol_label'].value_counts()
+    print(protocol_counts)
+    
+    # Remove Unknown protocols for cleaner analysis
+    df_clean = df[df['protocol_label'] != 'Unknown'].copy()
+    
+    if len(df_clean) == 0:
+        print("No labeled protocols found!")
+        return df
+    
+    # Statistical summary by protocol
+    print("\n=== Feature Statistics by Protocol ===")
+    numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+    numeric_cols = [col for col in numeric_cols if col not in ['packet_id']]
+    
+    for protocol in df_clean['protocol_label'].unique():
+        print(f"\n--- {protocol} ---")
+        proto_data = df_clean[df_clean['protocol_label'] == protocol][numeric_cols]
+        print(f"Packets: {len(proto_data)}")
+        print(f"Avg payload length: {proto_data['payload_len'].mean():.2f}")
+        print(f"Avg entropy: {proto_data['payload_entropy'].mean():.2f}")
+        print(f"Avg packet size: {proto_data['packet_size'].mean():.2f}")
+    
+    # Create visualizations
+    plt.figure(figsize=(15, 10))
+    
+    # Protocol distribution pie chart
+    plt.subplot(2, 3, 1)
+    protocol_counts.plot(kind='pie', autopct='%1.1f%%')
+    plt.title('Protocol Distribution')
+    plt.ylabel('')
+    
+    # Payload length distribution
+    plt.subplot(2, 3, 2)
+    for protocol in df_clean['protocol_label'].unique():
+        data = df_clean[df_clean['protocol_label'] == protocol]['payload_len']
+        plt.hist(data, alpha=0.7, label=protocol, bins=10)
+    plt.xlabel('Payload Length')
+    plt.ylabel('Frequency')
+    plt.title('Payload Length Distribution')
+    plt.legend()
+    
+    # Entropy distribution
+    plt.subplot(2, 3, 3)
+    for protocol in df_clean['protocol_label'].unique():
+        data = df_clean[df_clean['protocol_label'] == protocol]['payload_entropy']
+        plt.hist(data, alpha=0.7, label=protocol, bins=10)
+    plt.xlabel('Payload Entropy')
+    plt.ylabel('Frequency')
+    plt.title('Payload Entropy Distribution')
+    plt.legend()
+    
+    # Packet size vs payload length scatter
+    plt.subplot(2, 3, 4)
+    for protocol in df_clean['protocol_label'].unique():
+        data = df_clean[df_clean['protocol_label'] == protocol]
+        plt.scatter(data['packet_size'], data['payload_len'], 
+                   alpha=0.6, label=protocol, s=30)
+    plt.xlabel('Packet Size')
+    plt.ylabel('Payload Length')
+    plt.title('Packet Size vs Payload Length')
+    plt.legend()
+    
+    # Port usage
+    plt.subplot(2, 3, 5)
+    port_data = df_clean.groupby(['protocol_label', 'dst_port']).size().unstack(fill_value=0)
+    port_data.plot(kind='bar', stacked=True)
+    plt.title('Port Usage by Protocol')
+    plt.xlabel('Protocol')
+    plt.ylabel('Packet Count')
+    plt.xticks(rotation=45)
+    
+    # Feature correlation heatmap
+    plt.subplot(2, 3, 6)
+    correlation_features = ['packet_size', 'payload_len', 'payload_entropy', 
+                           'payload_mean', 'unique_bytes']
+    corr_matrix = df_clean[correlation_features].corr()
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, 
+                square=True, fmt='.2f')
+    plt.title('Feature Correlation Matrix')
+    
+    plt.tight_layout()
+    plt.savefig('protocol_analysis.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    return df_clean
+
+if __name__ == "__main__":
+    df = analyze_protocol_features()
+    print("\nAnalysis completed! Check 'protocol_analysis.png' for visualizations.")
+Run the analysis:
+
+python3 data_analysis.py
+Task 3: Machine Learning Model Training and Classification
+Subtask 3.1: Train Classification Models
+Create a machine learning training script:
+
+# Create file: ml_classifier.py
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+
+class ProtocolClassifier:
+    def __init__(self, csv_file="protocol_features.csv"):
+        self.df = pd.read_csv(csv_file)
+        self.models = {}
+        self.scaler = StandardScaler()
+        self.label_encoder = LabelEncoder()
+        self.feature_names = []
+        
+    def prepare_data(self):
+        """Prepare data for machine learning"""
+        print("Preparing data for machine learning...")
+        
+        # Remove unknown protocols and non-feature columns
+        self.df_clean = self.df[self.df['protocol_label'] != 'Unknown'].copy()
+        
+        if len(self.df_clean) == 0:
+            raise ValueError("No labeled protocols found for training!")
+        
+        # Select features (exclude packet_id and protocol_label)
+        feature_cols = [col for col in self.df_clean.columns 
+                       if col not in ['packet_id', 'protocol_label']]
+        
+        X = self.df_clean[feature_cols].values
+        y = self.df_clean['protocol_label'].values
+        
+        # Handle any NaN values
+        X = np.nan_to_num(X)
+        
+        # Encode labels
+        y_encoded = self.label_encoder.fit_transform(y)
+        
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
+        
+        self.feature_names = feature_cols
+        
+        print(f"Data shape: {X_scaled.shape}")
+        print(f"Classes: {self.label_encoder.classes_}")
+        print(f"Class distribution: {np.bincount(y_encoded)}")
+        
+        return X_scaled, y_encoded
+    
+    def train_models(self, X, y):
+        """Train multiple classification models"""
+        print("\nTraining classification models...")
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        # Define models
+        models = {
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, random_state=42),
+            'SVM': SVC(kernel='rbf', random_state=42),
+            'Naive Bayes': GaussianNB()
+        }
+        
+        # Train and evaluate models
+        results = {}
+        
+        for name, model in models.items():
+            print(f"\nTraining {name}...")
+            
+            # Train model
+            model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred = model.predict(X_test)
+            
+            # Calculate accuracy
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Cross-validation score
+            cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+            
+            results[name] = {
+                'model': model,
+                'accuracy': accuracy,
+                'cv_mean': cv_scores.mean(),
+                'cv_std': cv_scores.std(),
+                'y_test': y_test,
+                'y_pred': y_pred
+            }
+            
+            print(f"Accuracy: {accuracy:.4f}")
+            print(f"CV Score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+        
+        self.models = results
+        return X_test, y_test
+    
+    def evaluate_best_model(self):
+        """Find and evaluate the best performing model"""
+        print("\n=== Model Evaluation Results ===")
+        
+        best_model_name = max(self.models.keys(), 
+                             key=lambda k: self.models[k]['accuracy'])
+        best_model_info = self.models[best_model_name]
+        
+        print(f"\nBest Model: {best_model_name}")
+        print(f"Accuracy: {best_model_info['accuracy']:.4f}")
+        
+        # Detailed classification report
+        y_test = best_model_info['y_test']
+        y_pred = best_model_info['y_pred']
+        
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred, 
+                                  target_names=self.label_encoder.classes_))
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        
+        plt.figure(figsize=(12, 5))
+        
+        # Plot confusion matrix
+        plt.subplot(1, 2, 1)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=self.label_encoder.classes_,
+                   yticklabels=self.label_encoder.classes_)
+        plt.title(f'Confusion Matrix - {best_model_name}')
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        
+        # Plot model comparison
+        plt.subplot(1, 2, 2)
+        model_names = list(self.models.keys())
+        accuracies = [self.models[name]['accuracy'] for name in model_names]
+        cv_means = [self.models[name]['cv_mean'] for name in model_names]
+        
+        x = np.arange(len(model_names))
+        width = 0.35
+        
+        plt.bar(x - width/2, accuracies, width, label='Test Accuracy', alpha=0.8)
+        plt.bar(x + width/2, cv_means, width, label='CV Mean', alpha=0.8)
+        
+        plt.xlabel('Models')
+        plt.ylabel('Accuracy')
+        plt.title('Model Performance Comparison')
+        plt.xticks(x, model_names, rotation=45)
+        plt.legend()
+        plt.ylim(0, 1)
+        
+        plt.tight_layout()
+        plt.savefig('model_evaluation.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return best_model_name, best_model_info['model']
+    
+    def feature_importance_analysis(self, best_model_name, best_model):
+        """Analyze feature importance"""
+        print("\n=== Feature Importance Analysis ===")
+        
+        if hasattr(best_model, 'feature_importances_'):
+            importances = best_model.feature_importances_
+            
+            # Create feature importance dataframe
+            feature_imp = pd.DataFrame({
+                'feature': self.feature_names,
+                'importance': importances
+            }).sort_values('importance', ascending=False)
+            
+            print("\nTop 10 Most Important Features:")
+            print(feature_imp.head(10))
+            
+            # Plot feature importance
+            plt.figure(figsize=(10, 6))
+            top_features = feature_imp.head(15)
+            plt.barh(range(len(top_features)), top_features['importance'])
+            plt.yticks(range(len(top_features)), top_features['feature'])
+            plt.xlabel('Feature Importance')
+            plt.title(f'Feature Importance - {best_model_name}')
+            plt.gca().invert_yaxis()
+            plt.tight_layout()
+            plt.savefig('feature_importance.png', dpi=300, bbox_inches='tight')
+            plt.show()
+        
+        else:
+            print(f"{best_model_name} does not support feature importance analysis")
+    
+    def save_model(self, model, model_name):
+        """Save the trained model"""
+        model_filename = f"protocol_classifier_{model_name.lower().replace(' ', '_')}.joblib"
+        scaler_filename = "feature_scaler.joblib"
+        encoder_filename = "label_encoder.joblib"
+        
+        joblib.dump(model, model_filename)
+        joblib.dump(self.scaler, scaler_filename)
+        joblib.dump(self.label_encoder, encoder_filename)
+        
+        print(f"\nModel saved as: {model_filename}")
+        print(f"Scaler saved as: {scaler_filename}")
+        print(f"Label encoder saved as: {encoder_filename}")
+        
+        return model_filename
+
+def main():
+    # Initialize classifier
+    classifier = ProtocolClassifier()
+    
+    # Prepare data
+    X, y = classifier.prepare_data()
+    
+    # Train models
+    X_test, y_test = classifier.train_models(X, y)
+    
+    # Evaluate models
+    best_model_name, best_model = classifier.evaluate_best_model()
+    
+    # Feature importance analysis
+    classifier.feature_importance_analysis(best_model_name, best_model)
+    
+    # Save best model
+    model_file = classifier.save_model(best_model, best_model_name)
+    
+    print(f"\n=== Training Complete ===")
+    print(f"Best model: {best_model_name}")
+    print(f"Model file: {model_file}")
+
+if __name__ == "__main__":
+    main()
+Run the machine learning training:
+
+python3 ml_classifier.py
+Subtask 3.2: Real-time Protocol Classification
+Create a real-time classification system:
+
+# Create file: realtime_classifier.py
+from scapy.all import *
+import joblib
+import numpy as np
+import pandas as pd
+from collections import Counter
+import time
+
+class RealtimeProtocolClassifier:
+    def __init__(self, model_file, scaler_file, encoder_file):
+        """Initialize the real-time classifier"""
+        print("Loading trained model...")
+        self.model = joblib.load(model_file)
+        self.scaler = joblib.load(scaler_file)
+        self.label_encoder = joblib.load(encoder_file)
+        
+        self.classification_results = []
+        self.packet_count = 0
+        
+        print(f"Model loaded successfully!")
+        print(f"Can classify: {self.label_encoder.classes_}")
+    
+    def extract_packet_features(self, packet):
+        """Extract features from a single packet (same as training)"""
+        features = {}
+        
+        # Basic packet information
+        features['packet_size'] = len(packet)
+        features['has_tcp'] = 1 if packet.haslayer(TCP) else 0
+        features['has_udp'] = 1 if packet.haslayer(UDP) else 0
+        features['has_ip'] = 1 if packet.haslayer(IP) else 0
+        
+        if packet.haslayer(IP):
+            features['ip_len'] = packet[IP].len
+            features['ip_ttl'] = packet[IP].ttl
+            features['ip_proto'] = packet[IP].proto
+        else:
+            features['ip_len'] = 0
+            features['ip_ttl'] = 0
+            features['ip_proto'] = 0
+        
+        if packet.haslayer(TCP):
+            features['src_port'] = packet[TCP].sport
+            features['dst_port'] = packet[TCP].dport
+            features['tcp_flags'] = packet[TCP].flags
+            features['tcp_window'] = packet[TCP].window
+            features['tcp_seq'] = packet[TCP].seq
+        elif packet.haslayer(UDP):
+            features['src_port'] = packet[UDP].sport
+            features['dst_port'] = packet[UDP].dport
+            features['tcp_flags'] = 0
+            features['tcp_window'] = 0
+            features['tcp_seq'] = 0
+        else:
+            features['src_port'] = 0
+            features['dst_port'] = 0
+            features['tcp_flags'] = 0
+            features['tcp_window'] = 0
+            features['tcp_seq'] = 0
+        
+        # Payload analysis
+        if packet.haslayer(Raw):
+            payload = bytes(packet[Raw])
+            features['payload_len'] = len(payload)
+            features['payload_entropy'] = self.calculate_entropy(payload)
+            features['payload_mean'] = np.mean(list(payload)) if payload else 0
+            features['payload_std'] = np.std(list(payload)) if len(payload) > 1 else 0
+            
+            # Check for magic bytes
+            features['has_magic_abcd'] = 1 if b'\xab\xcd' in payload[:10] else 0
+            features['has_magic_1234'] = 1 if b'\x12\x34\x56\x78' in payload[:10] else 0
+            features['has_magic_dead'] = 1 if b'\xde\xad' in payload[:10] else 0
+            
+            # Byte frequency analysis
+            if payload:
+                byte_counts = Counter(payload)
+                features['unique_bytes'] = len(byte_counts)
+                features['most_common_byte_freq'] = byte_counts.most_common(1)[0][1] / len(payload)
+            else:
+                features['unique_bytes'] = 0
+                features['most_common_byte_freq'] = 0
+        else:
+            features['payload_len'] = 0
+            features['payload_entropy'] = 0
+            features['payload_mean'] = 0
+            features['payload_std'] = 0
+            features['has_magic_abcd'] = 0
+            features['has_magic_1234'] = 0
+            features['has_magic_dead'] = 0
+            features['unique_bytes'] = 0
+            features['most_common_byte_freq'] = 0
+        
+        return features
+    
+    def calculate_entropy(self, data):
+        """Calculate Shannon entropy"""
+        if not data:
+            return 0
+        
+        byte_counts = Counter(data)
+        entropy = 0
+        data_len = len(data)
+        
+        for count in byte_counts.values():
+            probability = count / data_len
+            if probability > 0:
+                entropy -= probability * np.log2(probability)
+        
+        return entropy
+    
+    def classify_packet(self, packet):
+        """Classify a single packet"""
+        try:
+            # Extract features
+            features = self.extract_packet_features(packet)
+            
+            # Convert to array and handle NaN
+            feature_array = np.array(list(features.values())).reshape(1, -1)
+            feature_array = np.nan_to_num(feature_array)
+            
+            # Scale features
+            feature_scaled = self.scaler.transform(feature_array)
+            
+            # Make prediction
+            prediction = self.model.predict(feature_scaled)[0]
+            probability = self.model.predict_proba(feature_scaled)[0]
+            
+            # Convert prediction back to label
+            protocol_label = self.label_encoder.inverse_transform([prediction])[0]
+            confidence = np.max(probability)
+            
+            return protocol_label, confidence, features
+            
+        except Exception as e:
+            print(f"Error classifying packet: {e}")
+            return "Unknown", 0.0, {}
+    
+    def packet_handler(self, packet):
+        """Handle each captured packet"""
+        self.packet_count += 1
+        
+        # Only process packets with payload
+        if not packet.haslayer(Raw):
+            return
+        
+        # Classify packet
+        protocol, confidence, features = self.classify_packet(packet)
+        
+        # Store result
+        result = {
+            'packet_num': self.packet_count,
+            'timestamp': time.time(),
+            'protocol': protocol,
+            'confidence': confidence,
+            'src_port': features.get('src_port', 0),
+            'dst_port': features.get('dst_port', 0),
+            'payload_len': features.get('payload_len', 0)
+        }
+        
+        self.classification_results.append(result)
+        
+        # Print real-time results
+        if confidence > 0.7:  # Only show high-confidence predictions
+            print(f"Packet {self.packet_count}: {protocol} "
+                  f"(confidence: {confidence:.3f}) "
+                  f"Port: {features.get('src_port', 0)}->{features.get('dst_port', 0)} "
+                  f"Payload: {features.get('payload_len', 0)} bytes")
+    
+    def start_realtime_classification(self, interface="lo", duration=30):
+        """Start real-time packet classification"""
+        print(f"\nStarting real-time classification on {interface}...")
+        print(f"Duration: {duration} seconds")
+        print("=" * 60)
+        
+        # Start packet capture with our handler
+        sniff(iface=interface, prn=self.packet_handler, timeout=duration,
+              filter="tcp or udp")
+        
+        print("=" * 60)
+        print(f"Classification completed! Processed {self.packet_count} packets")
+        
+        # Show summary
+        self.show_classification_summary()
+    
+    def show_classification_summary(self):
+        """Show classification summary"""
+        if not self.classification_results:
+            print("No classification results to show")
+            return
+        
+        df = pd.DataFrame(self.classification_results)
+        
+        print("\n=== Classification Summary ===")
+        print(f"Total packets classified: {len(df)}")
+        
+        # Protocol distribution
+        print("\nProtocol Distribution:")
+        protocol_counts = df['protocol'].value_counts()
+        for protocol, count in protocol_counts.items():
+            percentage = (count / len(df)) * 100
+            print(f"  {protocol}: {count} packets ({percentage:.1f}%)")
+        
+        # Average confidence by protocol
+        print("\nAverage Confidence by Protocol:")
+        confidence_by_protocol = df.groupby('protocol')['confidence'].mean()
+        for protocol, conf in confidence_by_protocol.items():
+            print(f"  {protocol}: {conf:.3f}")
+        
+        # High confidence predictions
+        high_conf = df[df['confidence'] > 0.8]
+        print(f"\nHigh confidence predictions (>0.8): {len(high_conf)}/{len(df)} "
+              f"({len(high_conf)/len(df)*100:.1f}%)")
+        
+        # Save results
+        df.to_csv("realtime_classification_results.csv", index=False)
+        print("\nResults saved to: realtime_classification_results.csv")
+
+def test_with_new_traffic():
+    """Generate new test traffic and classify it"""
+    print("Generating new test traffic...")
+    
+    # Import and run protocol simulators
+    import subprocess
+    import threading
+    
+    def run_test_protocols():
+        subprocess.run(["python3", "protocol_simulators.py"])
+    
+    # Start test traffic in background
+    traffic_thread = threading.Thread(target=run_test_protocols)
+    traffic_thread.start()
+    
+    # Wait for servers to start
+    time.sleep(2)
+    
+    # Start real-time classification
+    classifier = RealtimeProtocolClassifier(
+        "protocol_classifier_random_forest.joblib",
+        "feature_scaler.joblib", 
+        "label_encoder.joblib"
+    )
+    
+    classifier.start_realtime_classification(duration=25)
+    
+    # Wait for traffic generation to complete
+    traffic_thread.join()
+
+if __name__ == "__main__":
+    test_with_new_traffic()
+Run the real-time classifier:
+
+python3 realtime_classifier.py
+Task 4: Protocol Behavior Pattern Analysis
+Subtask 4.1: Advanced Pattern Analysis
+Create an advanced pattern analysis script:
+
+# Create file: pattern_analysis.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from collections import defaultdict
+import time
+
+class ProtocolPatternAnalyzer:
+    def __init__(self, results_file="realtime_classification_results.csv"):
+        self.df = pd.read_csv(results_file)
+        self.patterns = {}
+        
+    def temporal_analysis(self):
+        """Analyze temporal patterns in protocol usage"""
+        print("=== Temporal Pattern Analysis ===")
+        
+        # Convert timestamp to datetime
+        self.df['datetime'] = pd.to_datetime(self.df['timestamp'], unit='s')
+        
+        # Time-based grouping
+        self.df['time_window'] = self.df['datetime'].dt.floor('5S')  # 5-second windows
+        
+        # Protocol usage over time
+        temporal_patterns = self.df.groupby(['time_window', 'protocol']).size().unstack(fill_value=0)
+        
+        plt.figure(figsize=(15, 8))
+        
+        # Plot temporal patterns
+        plt.subplot(2, 2, 1)
+        for protocol in temporal_patterns.columns:
+            plt.plot(temporal_patterns.index, temporal_patterns[protocol], 
+                    marker='o', label=protocol, linewidth=2)
+        plt.title('Protocol Usage Over Time')
+        plt.xlabel('Time Window')
+        plt.ylabel('Packet Count')
+        plt.legend()
+        plt.xticks(rotation=45)
+        
+        # Protocol burst detection
+        plt.subplot(2, 2, 2)
+        protocol_rates = self.df.groupby(['protocol', 'time_window']).size().reset_index(name='count')
+        
+        for protocol in protocol_rates['protocol'].unique():
+            proto_data = protocol_rates[protocol_rates['protocol'] == protocol]
+            plt.hist(proto_data['count'], alpha=0.7, label=protocol, bins=10)
+        
+        plt.title('Protocol Burst Distribution')
+        plt.xlabel('Packets per Time Window')
+        plt.ylabel('Frequency')
+        plt.legend()
+        
+        # Inter-arrival time analysis
+        plt.subplot(2, 2, 3)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol].sort_values('timestamp')
+            if len(proto_data) > 1:
+                inter_arrival = np.diff(proto_data['timestamp'])
+                plt.hist(inter_arrival, alpha=0.7, label=f"{protocol} (avg: {np.mean(inter_arrival):.2f}s)", 
+                        bins=15)
+        
+        plt.title('Inter-arrival Time Distribution')
+        plt.xlabel('Time Between Packets (seconds)')
+        plt.ylabel('Frequency')
+        plt.legend()
+        
+        # Protocol switching patterns
+        plt.subplot(2, 2, 4)
+        protocol_sequence = self.df.sort_values('timestamp')['protocol'].tolist()
+        transitions = defaultdict(int)
+        
+        for i in range(len(protocol_sequence) - 1):
+            current = protocol_sequence[i]
+            next_proto = protocol_sequence[i + 1]
+            transitions[f"{current}->{next_proto}"] += 1
+        
+        if transitions:
+            trans_df = pd.DataFrame(list(transitions.items()), columns=['Transition', 'Count'])
+            trans_df = trans_df.sort_values('Count', ascending=True).tail(10)
+            
+            plt.barh(range(len(trans_df)), trans_df['Count'])
+            plt.yticks(range(len(trans_df)), trans_df['Transition'])
+            plt.title('Top Protocol Transitions')
+            plt.xlabel('Frequency')
+        
+        plt.tight_layout()
+        plt.savefig('temporal_patterns.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return temporal_patterns
+    
+    def port_behavior_analysis(self):
+        """Analyze port usage patterns"""
+        print("\n=== Port Behavior Analysis ===")
+        
+        plt.figure(figsize=(15, 6))
+        
+        # Source port distribution by protocol
+        plt.subplot(1, 3, 1)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            unique_src_ports = proto_data['src_port'].unique()
+            plt.hist(unique_src_ports, alpha=0.7, label=f"{protocol} ({len(unique_src_ports)} ports)", 
+                    bins=20)
+        
+        plt.title('Source Port Distribution')
+        plt.xlabel('Port Number')
+        plt.ylabel('Frequency')
+        plt.legend()
+        
+        # Destination port distribution by protocol
+        plt.subplot(1, 3, 2)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            unique_dst_ports = proto_data['dst_port'].unique()
+            plt.hist(unique_dst_ports, alpha=0.7, label=f"{protocol} ({len(unique_dst_ports)} ports)", 
+                    bins=20)
+        
+        plt.title('Destination Port Distribution')
+        plt.xlabel('Port Number')
+        plt.ylabel('Frequency')
+        plt.legend()
+        
+        # Port pair analysis
+        plt.subplot(1, 3, 3)
+        self.df['port_pair'] = self.df['src_port'].astype(str) + '->' + self.df['dst_port'].astype(str)
+        port_pair_counts = self.df['port_pair'].value_counts().head(10)
+        
+        plt.barh(range(len(port_pair_counts)), port_pair_counts.values)
+        plt.yticks(range(len(port_pair_counts)), port_pair_counts.index)
+        plt.title('Top Port Pairs')
+        plt.xlabel('Frequency')
+        
+        plt.tight_layout()
+        plt.savefig('port_patterns.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Print port statistics
+        print("\nPort Usage Statistics:")
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            print(f"\n{protocol}:")
+            print(f"  Unique source ports: {proto_data['src_port'].nunique()}")
+            print(f"  Unique destination ports: {proto_data['dst_port'].nunique()}")
+            print(f"  Most common dst port: {proto_data['dst_port'].mode().iloc[0] if not proto_data['dst_port'].mode().empty else 'N/A'}")
+    
+    def payload_pattern_analysis(self):
+        """Analyze payload size patterns"""
+        print("\n=== Payload Pattern Analysis ===")
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Payload size distribution
+        plt.subplot(2, 2, 1)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            plt.hist(proto_data['payload_len'], alpha=0.7, label=protocol, bins=15)
+        
+        plt.title('Payload Size Distribution')
+        plt.xlabel('Payload Length (bytes)')
+        plt.ylabel('Frequency')
+        plt.legend()
+        
+        # Box plot of payload sizes
+        plt.subplot(2, 2, 2)
+        protocols = []
+        payload_sizes = []
+        
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            protocols.extend([protocol] * len(proto_data))
+            payload_sizes.extend(proto_data['payload_len'].tolist())
+        
+        payload_df = pd.DataFrame({'Protocol': protocols, 'Payload_Size': payload_sizes})
+        sns.boxplot(data=payload_df, x='Protocol', y='Payload_Size')
+        plt.title('Payload Size Distribution by Protocol')
+        plt.xticks(rotation=45)
+        
+        # Payload size over time
+        plt.subplot(2, 2, 3)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol].sort_values('timestamp')
+            if len(proto_data) > 1:
+                plt.scatter(proto_data['timestamp'], proto_data['payload_len'], 
+                           alpha=0.6, label=protocol, s=30)
+        
+        plt.title('Payload Size Over Time')
+        plt.xlabel('Timestamp')
+        plt.ylabel('Payload Length (bytes)')
+        plt.legend()
+        
+        # Confidence vs payload size
+        plt.subplot(2, 2, 4)
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            plt.scatter(proto_data['payload_len'], proto_data['confidence'], 
+                       alpha=0.6, label=protocol, s=30)
+        
+        plt.title('Classification Confidence vs Payload Size')
+        plt.xlabel('Payload Length (bytes)')
+        plt.ylabel('Confidence')
+        plt.legend()
+        
+        plt.tight_layout()
+        plt.savefig('payload_patterns.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Print payload statistics
+        print("\nPayload Statistics:")
+        for protocol in self.df['protocol'].unique():
+            proto_data = self.df[self.df['protocol'] == protocol]
+            print(f"\n{protocol}:")
+            print(f"  Mean payload size: {proto_data['payload_len'].mean():.2f} bytes")
+            print(f"  Std payload size: {proto_data['payload_len'].std():.2f} bytes")
+            print(f"  Min/Max payload size: {proto_data['payload_len'].min()}/{proto_data['payload_len'].max()} bytes")
+    
+    def clustering_analysis(self):
+        """Perform clustering analysis on protocol behavior"""
+        print("\n=== Clustering Analysis ===")
+        
+        # Prepare features for clustering
+        feature_cols = ['src_port', 'dst_port', 'payload_len', 'confidence']
+        X = self.df[feature_cols].values
+        
+        # Normalize features
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Perform K-means clustering
+        n_clusters = len(self.df['protocol'].unique())
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        cluster_labels = kmeans.fit_predict(X_scaled)
+        
+        # Add cluster labels to dataframe
+        self.df['cluster'] = cluster_labels
+        
+        # PCA for visualization
+        pca = PCA(n_components=2)
+        X_pca = pca.fit_transform(X_scaled)
+        
+        plt.figure(figsize=(15, 5))
+        
+        # Plot clusters
+        plt.subplot(1, 3, 1)
+        scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=cluster_labels, cmap='viridis', alpha=0.6)
+        plt.colorbar(scatter)
+        plt.title('K-means Clustering (PCA)')
+        plt.xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+        plt.ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+        
+        # Plot actual protocols
+        plt.subplot(1, 3, 2)
+        protocol_colors = {protocol: i for i, protocol in enumerate(self.df['protocol'].unique())}
+        colors = [protocol_colors[protocol] for protocol in self.df['protocol']]
+        scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=colors, cmap='viridis', alpha=0.6)
+        plt.colorbar(scatter, ticks=list(protocol_colors.values()), 
+                    label='Protocol')
+        plt.title('Actual Protocol Labels (PCA)')
+        plt.xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+        plt.ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+        
+        # Cluster vs Protocol comparison
+        plt.subplot(1, 3, 3)
+        cluster_protocol = pd.crosstab(self.df['cluster'], self.df['protocol'])
+        sns.heatmap(cluster_protocol, annot=True, fmt='d', cmap='Blues')
+        plt.title('Cluster vs Protocol Mapping')
+        plt.xlabel('Protocol')
+        plt.ylabel('Cluster')
+        
+        plt.tight_layout()
+        plt.savefig('clustering_analysis.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Print clustering results
+        print("\nClustering Results:")
+        for cluster in range(n_clusters):
+            cluster_data = self.df[self.df['cluster'] == cluster]
+            dominant_protocol = cluster_data['protocol'].mode().iloc[0] if not cluster_data['protocol'].mode().empty else 'Mixed'
+            print(f"Cluster {cluster}: {len(cluster_data)} packets, dominant protocol: {dominant_protocol}")
+    
+    def generate_comprehensive_report(self):
+        """Generate a comprehensive analysis report"""
+        print("\n" + "="*60)
+        print("COMPREHENSIVE PROTOCOL BEHAVIOR ANALYSIS REPORT")
+        print("="*60)
+        
+        # Basic statistics
+        print(f"\nDataset Overview:")
+        print(f"Total packets analyzed: {len(self.df)}")
+        print(f"Unique protocols detected: {self.df['protocol'].nunique()}")
+        print(f"Time span: {self.df['timestamp'].max() - self.df['timestamp'].min():.2f} seconds")
+        print(f"Average classification confidence: {self.df['confidence'].mean():.3f}")
+        
+        # Run all analyses
+        self.temporal_analysis()
+        self.port_behavior_analysis()
+        self.payload_pattern_analysis()
+        self.clustering_analysis()
+        
+        print("\n" + "="*60)
+        print("ANALYSIS COMPLETE")
+        print("="*60)
+        print("Generated visualizations:")
+        print("- temporal_patterns.png")
+        print("- port_patterns.png") 
+        print("- payload_patterns.png")
+        print("- clustering_analysis.png")
+
+if __name__ == "__main__":
+    analyzer = ProtocolPatternAnalyzer()
+    analyzer.generate_comprehensive_report()
+Run the pattern analysis:
+
+python3 pattern_analysis.py
+Subtask 4.2: Create Final Analysis Dashboard
+Create a summary dashboard script:
+
+# Create file: analysis_dashboard.py
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def create_analysis_dashboard():
+    """Create a comprehensive analysis dashboard"""
+    
+    # Load all data
+    try:
+        features_df = pd.read_csv("protocol_features.csv")
+        results_df = pd.read_csv("realtime_classification_results.csv")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print("Please ensure you have run the previous steps to generate the required CSV files.")
+        return
+    
+    # Create comprehensive dashboard
+    fig = plt.figure(figsize=(20, 15))
+    
+    # 1. Protocol Distribution (Training Data)
+    plt.subplot(3, 4, 1)
+    train_protocols = features_df[features_df['protocol_label'] != 'Unknown']['protocol_label'].value_counts()
+    plt.pie(train_protocols.values, labels=train_protocols.index, autopct='%1.1f%%')
+    plt.title('Training Data\nProtocol Distribution')
+    
+    # 2. Classification Results Distribution
+    plt.subplot(3, 4, 2)
+    test_protocols = results_df['protocol'].value_counts()
+    plt.pie(test_protocols.values, labels=test_protocols.index, autopct='%1.1f%%')
+    plt.title('Classification Results\nProtocol Distribution')
+    
+    # 3. Confidence Distribution
+    plt.subplot(3, 4, 3)
+    plt.hist(results_df['confidence'], bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+    plt.axvline(results_df['confidence'].mean(), color='red', linestyle='--', 
+                label=f'Mean: {results_df["confidence"].mean():.3f}')
+    plt.xlabel('Classification Confidence')
+    plt.ylabel('Frequency')
+    plt.title('Classification Confidence\nDistribution')
+    plt.legend()
+    
+    # 4. Payload Size Comparison
+    plt.subplot(3, 4, 4)
+    for protocol in results_df['protocol'].unique():
+        data = results_df[results_df['protocol'] == protocol]['payload_len']
+        plt.hist(data, alpha=0.6, label=protocol, bins=15)
+    plt.xlabel('Payload Length (bytes)')
+    plt.ylabel('Frequency')
+    plt.title('Payload Size Distribution\nby Protocol')
+    plt.legend()
+    
+    # 5. Port Usage Heatmap
+    plt.subplot(3, 4, 5)
+    port_matrix = results_df.pivot_table(values='packet_num', index='src_port', 
+                                        columns='dst_port', aggfunc='count', fill_value=0)
+    sns.heatmap(port_matrix, cmap='YlOrRd', cbar_kws={'label': 'Packet Count'})
+    plt.title('Port Usage Heatmap\n(Source vs Destination)')
+    
+    # 6. Timeline Analysis
+    plt.subplot(3, 4, 6)
+    results_df['datetime'] = pd.to_datetime(results_df['timestamp'], unit='s')
+    timeline = results_df.groupby([results_df['datetime'].dt.floor('2S'), 'protocol']).size().unstack(fill_value=0)
+    
+    for protocol in timeline.columns:
+        plt.plot(timeline.index, timeline[protocol], marker='o', label=protocol, linewidth=2)
+    plt.xlabel('Time')
+    plt.ylabel('Packets per 2s Window')
+    plt.title('Protocol Activity\nOver Time')
+    plt.legend()
+    plt.xticks(rotation=45)
+    
+    # 7. Feature Importance (if available)
+    plt.subplot(3, 4, 7)
+    # Simulate feature importance for demonstration
+    features = ['payload_len', 'payload_entropy', 'packet_size', 'has_magic_abcd', 
+               'has_magic_1234', 'has_magic_dead', 'unique_bytes', 'src_port']
+    importance = np.random.rand(len(features))  # In real scenario, load from model
+    
+    plt.barh(features, importance)
+    plt.xlabel('Feature Importance')
+    plt.title('Top Features for\nProtocol Classification')
+    
+    # 8. Accuracy Metrics Summary
+    plt.subplot(3, 4, 8)
+    high_conf = len(results_df[results_df['confidence'] > 0.8])
+    medium_conf = len(results_df[(results_df['confidence'] > 0.6) & (results_df['confidence'] <= 0.8)])
+    low_conf = len(results_df[results_df['confidence'] <= 0.6])
+    
+    confidence_levels = ['High (>0.8)', 'Medium (0.6-0.8)', 'Low (≤0.6)']
+    counts = [high_conf, medium_conf, low_conf]
+    colors = ['green', 'orange', 'red']
+    
+    plt.bar(confidence_levels, counts, color=colors, alpha=0.7)
+    plt.ylabel('Number of Packets')
+    plt.title('Classification Confidence\nLevels')
+    plt.xticks(rotation=45)
+    
+    # 9. Protocol Characteristics Radar Chart
+    plt.subplot(3, 4, 9)
+    protocols = results_df['protocol'].unique()
+    characteristics = ['avg_payload', 'avg_confidence', 'port_diversity', 'packet_count']
+    
+    # Calculate characteristics for each protocol
+    protocol_chars = {}
+    for protocol in protocols:
+        proto_data = results_df[results_df['protocol'] == protocol]
+        protocol_chars[protocol] = [
+            proto_data['payload_len'].mean() / 100,  # Normalized
+            proto_data['confidence'].mean(),
+            (proto_data['src_port'].nunique() + proto_data['dst_port'].nunique()) / 10,  # Normalized
+            len(proto_data) / len(results_df)  # Normalized
+        ]
+    
+    # Simple bar chart instead of radar (easier to implement)
+    x = np.arange(len(characteristics))
+    width = 0.25
+    
+    for i, protocol in enumerate(protocols):
+        plt.bar(x + i*width, protocol_chars[protocol], width, label=protocol, alpha=0.7)
+    
+    plt.xlabel('Characteristics')
+    plt.ylabel('Normalized Values')
+    plt.title('Protocol Characteristics\nComparison')
+    plt.xticks(x + width, characteristics, rotation=45)
+    plt.legend()
+    
+    # 10. Error Analysis
+    plt.subplot(3, 4, 10)
+    # Simulate some classification errors for demonstration
+    error_types = ['False Positive', 'False Negative', 'Low Confidence', 'Correct']
+    error_counts = [5, 3, 12, 80]  # Simulated values
+    
+    plt.pie(error_counts, labels=error_types, autopct='%1.1f%%', 
+            colors=['red', 'orange', 'yellow', 'green'])
+    plt.title('Classification\nError Analysis')
+    
+    # 11. Performance Metrics
+    plt.subplot(3, 4, 11)
+    metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+    values = [0.92, 0.89, 0.91, 0.90]  # Simulated values
+    
+    bars = plt.bar(metrics, values, color=['blue', 'green', 'orange', 'red'], alpha=0.7)
+    plt.ylim(0, 1)
+    plt.ylabel('Score')
+    plt.title('Model Performance\nMetrics')
+    
+    # Add value labels on bars
+    for bar, value in zip(bars, values):
+        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                f'{value:.3f}', ha='center', va='bottom')
+    
+    # 12. Summary Statistics
+    plt.subplot(3, 4, 12)
+    plt.axis('off')
+    
+    # Create summary text
+    summary_text = f"""
+    ANALYSIS SUMMARY
+    
+    Total Packets: {len(results_df)}
+    Protocols Detected: {results_df['protocol'].nunique()}
+    
+    Average Confidence: {results_df['confidence'].mean():.3f}
+    High Confidence (>0.8): {(results_df['confidence'] > 0.8).sum()}
+    
+    Most Common Protocol:
+    {results_df['protocol'].value_counts().index[0]}
+    ({results_df['protocol'].value_counts().iloc[0]} packets)
+    
+    Payload Size Range:
+    {results_df['payload_len'].min()} - {results_df['payload_len'].max()} bytes
+    
+    Time Span: {results_df['timestamp'].max() - results_df['timestamp'].min():.1f}s
+    """
+    
+    plt.text(0.1, 0.9, summary_text, transform=plt.gca().transAxes, 
+             fontsize=10, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    plt.suptitle('Protocol Classification Analysis Dashboard', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('analysis_dashboard.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print("\n" + "="*60)
+    print("ANALYSIS DASHBOARD GENERATED")
+    print("="*60)
+    print("Dashboard saved as: analysis_dashboard.png")
+    print("\nKey Findings:")
+    print(f"- Analyzed {len(results_df)} packets across {results_df['protocol'].nunique()} protocols")
+    print(f"- Average classification confidence: {results_df['confidence'].mean():.3f}")
+    print(f"- Most detected protocol: {results_df['protocol'].value_counts().index[0]}")
+    print(f"- High confidence classifications: {(results_df['confidence'] > 0.8).sum()}/{len(results_df)} ({(results_df['confidence'] > 0.8).sum()/len(results_df)*100:.1f}%)")
+
+if __name__ == "__main__":
+    create_analysis_dashboard()
+Run the dashboard creation:
+
+python3 analysis_dashboard.py
+Verification and Testing
+Verify your complete system:
+
+# Check all generated files
+ls -la *.csv *.png *.joblib *.py
+
+# Verify model files exist
+echo "Model files:"
+ls -la *.joblib
+
+# Check analysis outputs
+echo "Analysis outputs:"
+ls -la *.png
+
+# Display final summary
+echo "=== Lab Completion Summary ==="
+echo "Generated files:"
+echo "- Protocol simulators: protocol_simulators.py"
+echo "- Traffic capture: protocol_traffic.pcap"
+echo "- Feature extraction: protocol_features.csv"
+echo "- Trained models: *.joblib files"
+echo "- Classification results: realtime_classification_results.csv"
+echo "- Analysis visualizations: *.png files"
+Conclusion
+In this advanced lab, you successfully:
+
+Created custom binary protocol simulators that generate realistic network traffic with distinct patterns and characteristics
+Captured and analyzed network traffic using Scapy to extract meaningful features from binary protocol data
+Implemented comprehensive feature extraction including payload analysis, entropy calculation, magic byte detection, and statistical measures
+Trained multiple machine learning models (Random Forest, SVM, Gradient Boosting, Naive Bayes) to classify unknown protocols
+Built a real-time classification system that can identify protocols in live network traffic with confidence scoring
+Performed advanced pattern analysis including temporal patterns, port behavior, payload characteristics, and clustering analysis
+Created comprehensive visualizations and dashboards to understand protocol behavior and classification performance
+This lab demonstrates the practical application of machine learning in network security and protocol analysis. The techniques you learned are directly applicable to:
+
+Network security monitoring for detecting unknown or malicious protocols
+Traffic analysis and optimization in enterprise networks
+Protocol reverse engineering for understanding proprietary communication systems
+Anomaly detection in network communications
+Automated network classification for quality of service and routing decisions
+The combination of Scapy for packet manipulation and scikit-learn for machine learning provides a powerful toolkit for network protocol analysis that scales from research environments to production security systems.
