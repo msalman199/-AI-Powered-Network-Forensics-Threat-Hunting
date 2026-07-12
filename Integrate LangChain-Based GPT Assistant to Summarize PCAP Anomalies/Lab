@@ -1,0 +1,748 @@
+Integrate LangChain-Based GPT Assistant to Summarize PCAP Anomalies
+Learning Objectives
+By completing this lab, you will:
+
+Capture and analyze network traffic using traditional packet analysis tools
+Integrate LangChain with OpenAI GPT to create an intelligent network anomaly summarization system
+Generate actionable insights from PCAP file analysis using AI-powered natural language processing
+Develop skills in combining cybersecurity tools with modern AI frameworks
+Prerequisites
+Basic understanding of network protocols (TCP/IP, HTTP, DNS)
+Familiarity with Linux command line operations
+Basic Python programming knowledge
+Understanding of network security concepts and anomaly detection
+OpenAI API key (free tier available at openai.com)
+Lab Environment
+Al Nafi provides a Linux-based cloud machine for this lab. Click Start Lab to access your dedicated environment. The machine comes as bare metal with no pre-installed tools, so you will install all required components during the lab.
+
+Task 1: Set Up Environment and Capture Network Traffic
+Subtask 1.1: Install Required Tools
+Update the system and install network analysis tools:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y tcpdump wireshark-common python3 python3-pip git curl
+Install Python dependencies:
+
+pip3 install scapy langchain openai python-dotenv pandas numpy
+Subtask 1.2: Generate Network Traffic for Analysis
+Create a script to generate various types of network traffic:
+
+cat > traffic_generator.py << 'EOF'
+#!/usr/bin/env python3
+import subprocess
+import time
+import threading
+
+def generate_normal_traffic():
+    """Generate normal web traffic"""
+    commands = [
+        "curl -s http://httpbin.org/get > /dev/null",
+        "curl -s http://httpbin.org/post -d 'data=test' > /dev/null",
+        "nslookup google.com > /dev/null",
+        "ping -c 3 8.8.8.8 > /dev/null"
+    ]
+    
+    for cmd in commands:
+        subprocess.run(cmd, shell=True)
+        time.sleep(2)
+
+def generate_suspicious_traffic():
+    """Generate suspicious-looking traffic patterns"""
+    # Port scanning simulation
+    for port in [22, 23, 80, 443, 3389]:
+        subprocess.run(f"timeout 1 nc -z 192.168.1.1 {port} 2>/dev/null", shell=True)
+        time.sleep(0.5)
+    
+    # Rapid DNS queries
+    domains = ["malicious-domain.com", "suspicious-site.net", "bad-actor.org"]
+    for domain in domains:
+        subprocess.run(f"nslookup {domain} 2>/dev/null", shell=True)
+        time.sleep(1)
+
+if __name__ == "__main__":
+    print("Generating network traffic...")
+    
+    # Run normal traffic
+    normal_thread = threading.Thread(target=generate_normal_traffic)
+    normal_thread.start()
+    
+    time.sleep(5)
+    
+    # Run suspicious traffic
+    suspicious_thread = threading.Thread(target=generate_suspicious_traffic)
+    suspicious_thread.start()
+    
+    normal_thread.join()
+    suspicious_thread.join()
+    
+    print("Traffic generation complete")
+EOF
+
+chmod +x traffic_generator.py
+Subtask 1.3: Capture Network Traffic
+Start packet capture in the background:
+
+sudo tcpdump -i any -w network_capture.pcap &
+TCPDUMP_PID=$!
+echo "Started tcpdump with PID: $TCPDUMP_PID"
+Generate traffic and capture for 30 seconds:
+
+python3 traffic_generator.py
+sleep 30
+sudo kill $TCPDUMP_PID
+Verify the capture file:
+
+ls -la network_capture.pcap
+sudo tcpdump -r network_capture.pcap -c 10
+Task 2: Analyze PCAP Using Traditional Tools
+Subtask 2.1: Basic PCAP Analysis
+Create a Python script for traditional PCAP analysis:
+
+cat > pcap_analyzer.py << 'EOF'
+#!/usr/bin/env python3
+from scapy.all import *
+import json
+from collections import defaultdict, Counter
+import pandas as pd
+
+class PCAPAnalyzer:
+    def __init__(self, pcap_file):
+        self.pcap_file = pcap_file
+        self.packets = rdpcap(pcap_file)
+        self.analysis_results = {}
+    
+    def basic_statistics(self):
+        """Generate basic packet statistics"""
+        total_packets = len(self.packets)
+        protocols = Counter()
+        src_ips = Counter()
+        dst_ips = Counter()
+        ports = Counter()
+        
+        for packet in self.packets:
+            if packet.haslayer(IP):
+                src_ips[packet[IP].src] += 1
+                dst_ips[packet[IP].dst] += 1
+                
+                if packet.haslayer(TCP):
+                    protocols['TCP'] += 1
+                    ports[packet[TCP].dport] += 1
+                elif packet.haslayer(UDP):
+                    protocols['UDP'] += 1
+                    ports[packet[UDP].dport] += 1
+                elif packet.haslayer(ICMP):
+                    protocols['ICMP'] += 1
+        
+        return {
+            'total_packets': total_packets,
+            'protocols': dict(protocols.most_common()),
+            'top_src_ips': dict(src_ips.most_common(10)),
+            'top_dst_ips': dict(dst_ips.most_common(10)),
+            'top_ports': dict(ports.most_common(10))
+        }
+    
+    def detect_anomalies(self):
+        """Detect potential network anomalies"""
+        anomalies = []
+        
+        # Port scanning detection
+        port_scans = defaultdict(set)
+        for packet in self.packets:
+            if packet.haslayer(TCP) and packet.haslayer(IP):
+                if packet[TCP].flags == 2:  # SYN flag
+                    port_scans[packet[IP].src].add(packet[TCP].dport)
+        
+        for src_ip, ports in port_scans.items():
+            if len(ports) > 5:
+                anomalies.append({
+                    'type': 'Port Scan',
+                    'source_ip': src_ip,
+                    'ports_scanned': len(ports),
+                    'severity': 'High' if len(ports) > 10 else 'Medium'
+                })
+        
+        # DNS query frequency analysis
+        dns_queries = defaultdict(int)
+        for packet in self.packets:
+            if packet.haslayer(DNS) and packet.haslayer(IP):
+                if packet[DNS].qr == 0:  # Query
+                    dns_queries[packet[IP].src] += 1
+        
+        for src_ip, query_count in dns_queries.items():
+            if query_count > 10:
+                anomalies.append({
+                    'type': 'Excessive DNS Queries',
+                    'source_ip': src_ip,
+                    'query_count': query_count,
+                    'severity': 'Medium'
+                })
+        
+        # Large packet detection
+        large_packets = []
+        for packet in self.packets:
+            if len(packet) > 1500:
+                large_packets.append({
+                    'size': len(packet),
+                    'src': packet[IP].src if packet.haslayer(IP) else 'Unknown',
+                    'dst': packet[IP].dst if packet.haslayer(IP) else 'Unknown'
+                })
+        
+        if large_packets:
+            anomalies.append({
+                'type': 'Large Packets Detected',
+                'count': len(large_packets),
+                'max_size': max(p['size'] for p in large_packets),
+                'severity': 'Low'
+            })
+        
+        return anomalies
+    
+    def generate_report(self):
+        """Generate comprehensive analysis report"""
+        stats = self.basic_statistics()
+        anomalies = self.detect_anomalies()
+        
+        report = {
+            'file_analyzed': self.pcap_file,
+            'basic_statistics': stats,
+            'anomalies_detected': anomalies,
+            'summary': {
+                'total_anomalies': len(anomalies),
+                'high_severity': len([a for a in anomalies if a.get('severity') == 'High']),
+                'medium_severity': len([a for a in anomalies if a.get('severity') == 'Medium']),
+                'low_severity': len([a for a in anomalies if a.get('severity') == 'Low'])
+            }
+        }
+        
+        return report
+
+if __name__ == "__main__":
+    analyzer = PCAPAnalyzer('network_capture.pcap')
+    report = analyzer.generate_report()
+    
+    # Save report to JSON
+    with open('pcap_analysis_report.json', 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    print("PCAP Analysis Complete!")
+    print(f"Total packets analyzed: {report['basic_statistics']['total_packets']}")
+    print(f"Anomalies detected: {report['summary']['total_anomalies']}")
+    print("Detailed report saved to: pcap_analysis_report.json")
+EOF
+
+chmod +x pcap_analyzer.py
+Run the analysis:
+
+python3 pcap_analyzer.py
+cat pcap_analysis_report.json
+Task 3: Integrate LangChain-Based GPT Assistant
+Subtask 3.1: Set Up OpenAI API Configuration
+Create environment configuration:
+
+cat > .env << 'EOF'
+OPENAI_API_KEY=your_openai_api_key_here
+EOF
+Note: Replace your_openai_api_key_here with your actual OpenAI API key.
+
+Subtask 3.2: Create LangChain GPT Integration
+cat > langchain_pcap_assistant.py << 'EOF'
+#!/usr/bin/env python3
+import json
+import os
+from dotenv import load_dotenv
+from langchain.llms import OpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.schema import BaseOutputParser
+
+load_dotenv()
+
+class PCAPSummaryParser(BaseOutputParser):
+    """Custom parser for PCAP analysis summaries"""
+    
+    def parse(self, text: str) -> dict:
+        return {
+            'summary': text,
+            'recommendations': self.extract_recommendations(text),
+            'risk_level': self.extract_risk_level(text)
+        }
+    
+    def extract_recommendations(self, text):
+        """Extract actionable recommendations from the summary"""
+        lines = text.split('\n')
+        recommendations = []
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ['recommend', 'should', 'consider', 'implement']):
+                recommendations.append(line.strip())
+        
+        return recommendations
+    
+    def extract_risk_level(self, text):
+        """Determine overall risk level from the summary"""
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in ['critical', 'severe', 'high risk', 'immediate']):
+            return 'High'
+        elif any(keyword in text_lower for keyword in ['moderate', 'medium', 'concerning']):
+            return 'Medium'
+        else:
+            return 'Low'
+
+class LangChainPCAPAssistant:
+    def __init__(self):
+        self.llm = OpenAI(
+            temperature=0.3,
+            openai_api_key=os.getenv('OPENAI_API_KEY')
+        )
+        self.parser = PCAPSummaryParser()
+        self.setup_chains()
+    
+    def setup_chains(self):
+        """Set up LangChain prompts and chains"""
+        
+        # Summary generation prompt
+        summary_template = """
+        You are a cybersecurity expert analyzing network traffic data. 
+        Based on the following PCAP analysis report, provide a comprehensive summary of the findings:
+
+        PCAP Analysis Report:
+        {analysis_report}
+
+        Please provide:
+        1. Executive Summary of findings
+        2. Key security concerns identified
+        3. Risk assessment for each anomaly
+        4. Actionable recommendations for remediation
+        5. Priority levels for addressing issues
+
+        Focus on practical, actionable insights that a network administrator can implement.
+        """
+        
+        self.summary_prompt = PromptTemplate(
+            input_variables=["analysis_report"],
+            template=summary_template
+        )
+        
+        self.summary_chain = LLMChain(
+            llm=self.llm,
+            prompt=self.summary_prompt,
+            output_parser=self.parser
+        )
+        
+        # Detailed analysis prompt
+        detail_template = """
+        As a network security analyst, provide detailed technical analysis for this specific anomaly:
+
+        Anomaly Details:
+        {anomaly_details}
+
+        Network Context:
+        {network_context}
+
+        Provide:
+        1. Technical explanation of the anomaly
+        2. Potential attack vectors or causes
+        3. Impact assessment
+        4. Specific mitigation steps
+        5. Monitoring recommendations
+
+        Be specific and technical in your response.
+        """
+        
+        self.detail_prompt = PromptTemplate(
+            input_variables=["anomaly_details", "network_context"],
+            template=detail_template
+        )
+        
+        self.detail_chain = LLMChain(
+            llm=self.llm,
+            prompt=self.detail_prompt
+        )
+    
+    def generate_summary(self, analysis_report):
+        """Generate AI-powered summary of PCAP analysis"""
+        try:
+            result = self.summary_chain.run(
+                analysis_report=json.dumps(analysis_report, indent=2)
+            )
+            return result
+        except Exception as e:
+            return {
+                'summary': f"Error generating summary: {str(e)}",
+                'recommendations': [],
+                'risk_level': 'Unknown'
+            }
+    
+    def analyze_specific_anomaly(self, anomaly, network_context):
+        """Provide detailed analysis of specific anomaly"""
+        try:
+            result = self.detail_chain.run(
+                anomaly_details=json.dumps(anomaly, indent=2),
+                network_context=json.dumps(network_context, indent=2)
+            )
+            return result
+        except Exception as e:
+            return f"Error analyzing anomaly: {str(e)}"
+    
+    def generate_comprehensive_report(self, pcap_analysis):
+        """Generate comprehensive AI-enhanced report"""
+        
+        # Generate overall summary
+        overall_summary = self.generate_summary(pcap_analysis)
+        
+        # Analyze each anomaly in detail
+        detailed_analyses = []
+        for anomaly in pcap_analysis.get('anomalies_detected', []):
+            detailed_analysis = self.analyze_specific_anomaly(
+                anomaly, 
+                pcap_analysis['basic_statistics']
+            )
+            detailed_analyses.append({
+                'anomaly': anomaly,
+                'ai_analysis': detailed_analysis
+            })
+        
+        return {
+            'overall_summary': overall_summary,
+            'detailed_anomaly_analyses': detailed_analyses,
+            'original_analysis': pcap_analysis
+        }
+
+if __name__ == "__main__":
+    # Load the PCAP analysis report
+    with open('pcap_analysis_report.json', 'r') as f:
+        pcap_data = json.load(f)
+    
+    # Initialize the AI assistant
+    assistant = LangChainPCAPAssistant()
+    
+    # Generate comprehensive AI-enhanced report
+    ai_report = assistant.generate_comprehensive_report(pcap_data)
+    
+    # Save the enhanced report
+    with open('ai_enhanced_pcap_report.json', 'w') as f:
+        json.dump(ai_report, f, indent=2)
+    
+    print("AI-Enhanced PCAP Analysis Complete!")
+    print("\nOverall Risk Level:", ai_report['overall_summary']['risk_level'])
+    print("\nKey Recommendations:")
+    for rec in ai_report['overall_summary']['recommendations'][:3]:
+        print(f"- {rec}")
+    
+    print(f"\nDetailed analyses for {len(ai_report['detailed_anomaly_analyses'])} anomalies")
+    print("Full report saved to: ai_enhanced_pcap_report.json")
+EOF
+
+chmod +x langchain_pcap_assistant.py
+Subtask 3.3: Run AI-Enhanced Analysis
+Execute the LangChain GPT assistant:
+
+python3 langchain_pcap_assistant.py
+View the AI-enhanced results:
+
+cat ai_enhanced_pcap_report.json | head -50
+Task 4: Review and Refine Output for Actionability
+Subtask 4.1: Create Report Refinement Tool
+cat > report_refiner.py << 'EOF'
+#!/usr/bin/env python3
+import json
+from datetime import datetime
+
+class ReportRefiner:
+    def __init__(self, ai_report_file):
+        with open(ai_report_file, 'r') as f:
+            self.ai_report = json.load(f)
+    
+    def extract_actionable_items(self):
+        """Extract and prioritize actionable items"""
+        actionable_items = []
+        
+        # Extract from overall recommendations
+        overall_recs = self.ai_report['overall_summary'].get('recommendations', [])
+        for rec in overall_recs:
+            actionable_items.append({
+                'category': 'General Security',
+                'action': rec,
+                'priority': self.determine_priority(rec),
+                'source': 'Overall Analysis'
+            })
+        
+        # Extract from detailed anomaly analyses
+        for detail in self.ai_report['detailed_anomaly_analyses']:
+            anomaly_type = detail['anomaly'].get('type', 'Unknown')
+            severity = detail['anomaly'].get('severity', 'Low')
+            
+            # Extract specific actions from AI analysis
+            ai_text = detail['ai_analysis']
+            if isinstance(ai_text, str):
+                actions = self.extract_actions_from_text(ai_text)
+                for action in actions:
+                    actionable_items.append({
+                        'category': anomaly_type,
+                        'action': action,
+                        'priority': severity,
+                        'source': f'Anomaly Analysis: {anomaly_type}'
+                    })
+        
+        return actionable_items
+    
+    def determine_priority(self, text):
+        """Determine priority level from text content"""
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in ['immediate', 'urgent', 'critical', 'asap']):
+            return 'High'
+        elif any(keyword in text_lower for keyword in ['soon', 'important', 'should']):
+            return 'Medium'
+        else:
+            return 'Low'
+    
+    def extract_actions_from_text(self, text):
+        """Extract actionable statements from analysis text"""
+        actions = []
+        sentences = text.split('.')
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if any(keyword in sentence.lower() for keyword in [
+                'implement', 'configure', 'monitor', 'block', 'update', 
+                'install', 'enable', 'disable', 'review', 'check'
+            ]):
+                if len(sentence) > 10:  # Filter out very short sentences
+                    actions.append(sentence)
+        
+        return actions[:3]  # Limit to top 3 actions per anomaly
+    
+    def generate_executive_summary(self):
+        """Generate executive summary for management"""
+        original_stats = self.ai_report['original_analysis']['basic_statistics']
+        anomalies = self.ai_report['original_analysis']['anomalies_detected']
+        risk_level = self.ai_report['overall_summary']['risk_level']
+        
+        summary = {
+            'assessment_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'network_overview': {
+                'total_packets_analyzed': original_stats['total_packets'],
+                'anomalies_detected': len(anomalies),
+                'overall_risk_level': risk_level
+            },
+            'key_findings': [],
+            'immediate_actions_required': 0,
+            'business_impact': self.assess_business_impact(risk_level, anomalies)
+        }
+        
+        # Categorize findings
+        for anomaly in anomalies:
+            summary['key_findings'].append({
+                'type': anomaly['type'],
+                'severity': anomaly.get('severity', 'Unknown'),
+                'description': self.generate_finding_description(anomaly)
+            })
+            
+            if anomaly.get('severity') == 'High':
+                summary['immediate_actions_required'] += 1
+        
+        return summary
+    
+    def assess_business_impact(self, risk_level, anomalies):
+        """Assess potential business impact"""
+        if risk_level == 'High':
+            return "High - Potential for data breach, service disruption, or compliance violations"
+        elif risk_level == 'Medium':
+            return "Medium - Possible security vulnerabilities that could be exploited"
+        else:
+            return "Low - Minor security concerns with minimal immediate impact"
+    
+    def generate_finding_description(self, anomaly):
+        """Generate human-readable description of findings"""
+        anomaly_type = anomaly.get('type', 'Unknown')
+        
+        descriptions = {
+            'Port Scan': f"Detected port scanning activity from {anomaly.get('source_ip', 'unknown IP')} targeting {anomaly.get('ports_scanned', 0)} ports",
+            'Excessive DNS Queries': f"Unusual DNS query volume from {anomaly.get('source_ip', 'unknown IP')} with {anomaly.get('query_count', 0)} queries",
+            'Large Packets Detected': f"Detected {anomaly.get('count', 0)} oversized packets, maximum size {anomaly.get('max_size', 0)} bytes"
+        }
+        
+        return descriptions.get(anomaly_type, f"Detected {anomaly_type} anomaly")
+    
+    def create_refined_report(self):
+        """Create final refined report"""
+        actionable_items = self.extract_actionable_items()
+        executive_summary = self.generate_executive_summary()
+        
+        # Sort actionable items by priority
+        priority_order = {'High': 3, 'Medium': 2, 'Low': 1}
+        actionable_items.sort(key=lambda x: priority_order.get(x['priority'], 0), reverse=True)
+        
+        refined_report = {
+            'executive_summary': executive_summary,
+            'actionable_items': {
+                'high_priority': [item for item in actionable_items if item['priority'] == 'High'],
+                'medium_priority': [item for item in actionable_items if item['priority'] == 'Medium'],
+                'low_priority': [item for item in actionable_items if item['priority'] == 'Low']
+            },
+            'technical_details': {
+                'analysis_methodology': 'Traditional PCAP analysis enhanced with AI-powered insights',
+                'tools_used': ['tcpdump', 'scapy', 'LangChain', 'OpenAI GPT'],
+                'confidence_level': 'High'
+            }
+        }
+        
+        return refined_report
+
+if __name__ == "__main__":
+    refiner = ReportRefiner('ai_enhanced_pcap_report.json')
+    refined_report = refiner.create_refined_report()
+    
+    # Save refined report
+    with open('final_actionable_report.json', 'w') as f:
+        json.dump(refined_report, f, indent=2)
+    
+    # Display summary
+    print("=== NETWORK SECURITY ASSESSMENT SUMMARY ===")
+    print(f"Assessment Date: {refined_report['executive_summary']['assessment_date']}")
+    print(f"Overall Risk Level: {refined_report['executive_summary']['network_overview']['overall_risk_level']}")
+    print(f"Anomalies Detected: {refined_report['executive_summary']['network_overview']['anomalies_detected']}")
+    print(f"Immediate Actions Required: {refined_report['executive_summary']['immediate_actions_required']}")
+    
+    print("\n=== HIGH PRIORITY ACTIONS ===")
+    for item in refined_report['actionable_items']['high_priority'][:5]:
+        print(f"• {item['action']}")
+    
+    print(f"\nFull actionable report saved to: final_actionable_report.json")
+EOF
+
+chmod +x report_refiner.py
+Subtask 4.2: Generate Final Actionable Report
+Run the report refinement:
+
+python3 report_refiner.py
+View the final actionable report:
+
+cat final_actionable_report.json | jq '.executive_summary'
+Subtask 4.3: Create Human-Readable Dashboard
+cat > create_dashboard.py << 'EOF'
+#!/usr/bin/env python3
+import json
+from datetime import datetime
+
+def create_html_dashboard():
+    """Create an HTML dashboard for the analysis results"""
+    
+    # Load the final report
+    with open('final_actionable_report.json', 'r') as f:
+        report = json.load(f)
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Network Security Analysis Dashboard</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .header {{ background-color: #2c3e50; color: white; padding: 20px; border-radius: 5px; }}
+            .risk-high {{ color: #e74c3c; font-weight: bold; }}
+            .risk-medium {{ color: #f39c12; font-weight: bold; }}
+            .risk-low {{ color: #27ae60; font-weight: bold; }}
+            .section {{ margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }}
+            .action-item {{ margin: 10px 0; padding: 10px; background-color: #f8f9fa; border-left: 4px solid #007bff; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Network Security Analysis Dashboard</h1>
+            <p>Generated: {report['executive_summary']['assessment_date']}</p>
+        </div>
+        
+        <div class="section">
+            <h2>Executive Summary</h2>
+            <table>
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Total Packets Analyzed</td><td>{report['executive_summary']['network_overview']['total_packets_analyzed']}</td></tr>
+                <tr><td>Anomalies Detected</td><td>{report['executive_summary']['network_overview']['anomalies_detected']}</td></tr>
+                <tr><td>Overall Risk Level</td><td class="risk-{report['executive_summary']['network_overview']['overall_risk_level'].lower()}">{report['executive_summary']['network_overview']['overall_risk_level']}</td></tr>
+                <tr><td>Immediate Actions Required</td><td>{report['executive_summary']['immediate_actions_required']}</td></tr>
+            </table>
+        </div>
+        
+        <div class="section">
+            <h2>Key Findings</h2>
+    """
+    
+    for finding in report['executive_summary']['key_findings']:
+        risk_class = f"risk-{finding['severity'].lower()}"
+        html_content += f"""
+            <div class="action-item">
+                <strong>{finding['type']}</strong> 
+                <span class="{risk_class}">({finding['severity']} Severity)</span><br>
+                {finding['description']}
+            </div>
+        """
+    
+    html_content += """
+        </div>
+        
+        <div class="section">
+            <h2>High Priority Actions</h2>
+    """
+    
+    for action in report['actionable_items']['high_priority']:
+        html_content += f"""
+            <div class="action-item">
+                <strong>Category:</strong> {action['category']}<br>
+                <strong>Action:</strong> {action['action']}<br>
+                <strong>Source:</strong> {action['source']}
+            </div>
+        """
+    
+    html_content += """
+        </div>
+        
+        <div class="section">
+            <h2>Technical Details</h2>
+            <p><strong>Analysis Methodology:</strong> Traditional PCAP analysis enhanced with AI-powered insights</p>
+            <p><strong>Tools Used:</strong> tcpdump, scapy, LangChain, OpenAI GPT</p>
+            <p><strong>Confidence Level:</strong> High</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    with open('security_dashboard.html', 'w') as f:
+        f.write(html_content)
+    
+    print("HTML dashboard created: security_dashboard.html")
+
+if __name__ == "__main__":
+    create_html_dashboard()
+EOF
+
+python3 create_dashboard.py
+View the dashboard in a text browser or copy to view in a web browser:
+
+cat security_dashboard.html | head -50
+Verification and Testing
+Verify all components are working correctly:
+
+echo "=== Lab Verification ==="
+echo "1. PCAP file created: $(ls -la network_capture.pcap 2>/dev/null && echo "✓" || echo "✗")"
+echo "2. Traditional analysis: $(ls -la pcap_analysis_report.json 2>/dev/null && echo "✓" || echo "✗")"
+echo "3. AI-enhanced analysis: $(ls -la ai_enhanced_pcap_report.json 2>/dev/null && echo "✓" || echo "✗")"
+echo "4. Final actionable report: $(ls -la final_actionable_report.json 2>/dev/null && echo "✓" || echo "✗")"
+echo "5. HTML dashboard: $(ls -la security_dashboard.html 2>/dev/null && echo "✓" || echo "✗")"
+Conclusion
+You have successfully completed Lab 20, integrating a LangChain-based GPT assistant to summarize PCAP anomalies. This lab demonstrated the powerful combination of traditional network analysis tools with modern AI capabilities.
+
+Key Accomplishments:
+
+Captured and analyzed network traffic using traditional packet analysis tools
+Implemented LangChain integration with OpenAI GPT for intelligent anomaly summarization
+Generated actionable insights from raw network data using AI-powered natural language processing
+Created comprehensive, human-readable reports suitable for both technical teams and management
+Why This Matters: This integration represents the future of cybersecurity analysis, where AI enhances human expertise to provide faster, more comprehensive threat assessment. The ability to automatically generate actionable insights from complex network data significantly improves incident response times and decision-making quality in security operations centers.
+
+The skills developed in this lab are directly applicable to modern SOC environments, threat hunting operations, and automated security analysis pipelines used by leading cybersecurity organizations.
