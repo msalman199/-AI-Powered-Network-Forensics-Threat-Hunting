@@ -1,0 +1,732 @@
+Deploy AI-Assisted Hunting with Timesketch + ML Integrations
+Learning Objectives
+By completing this lab, you will:
+
+Deploy and configure Timesketch for timeline-based threat hunting
+Integrate machine learning models for automated threat detection
+Conduct advanced persistent threat (APT) hunting using AI-assisted analysis
+Analyze security events using ML-enhanced timeline correlation
+Prerequisites
+Basic Linux command line knowledge
+Understanding of log analysis concepts
+Familiarity with security event formats (JSON, CSV)
+Python programming fundamentals
+Lab Environment
+Al Nafi provides a Linux-based cloud machine for this lab. Click Start Lab to access your dedicated environment. The machine comes as bare metal with no pre-installed tools - you'll install everything during the lab.
+
+Task 1: Set up Timesketch for Timeline Analysis
+Subtask 1.1: Install Dependencies
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install required packages
+sudo apt install -y python3 python3-pip python3-venv git docker.io docker-compose postgresql postgresql-contrib redis-server
+
+# Start services
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+Subtask 1.2: Deploy Timesketch with Docker
+# Clone Timesketch repository
+git clone https://github.com/google/timesketch.git
+cd timesketch
+
+# Create environment file
+cat > .env << EOF
+POSTGRES_USER=timesketch
+POSTGRES_PASSWORD=timesketch123
+POSTGRES_DB=timesketch
+REDIS_HOST=redis
+ELASTIC_HOST=elasticsearch
+ELASTIC_PORT=9200
+EOF
+
+# Deploy using Docker Compose
+sudo docker-compose up -d
+Subtask 1.3: Configure Timesketch
+# Wait for services to start
+sleep 60
+
+# Create admin user
+sudo docker-compose exec timesketch-web tsctl create-user admin --password admin123
+
+# Create test sketch
+sudo docker-compose exec timesketch-web tsctl create-sketch "APT Hunt Lab" --user admin
+Subtask 1.4: Generate Sample Security Data
+# Create sample log directory
+mkdir -p ~/security_logs
+
+# Generate sample Windows security events
+cat > ~/security_logs/windows_security.csv << 'EOF'
+timestamp,event_id,source,message,user,host
+2024-01-15T08:30:15Z,4624,Security,"Successful logon",admin,workstation01
+2024-01-15T08:31:22Z,4625,Security,"Failed logon attempt",guest,workstation01
+2024-01-15T08:32:45Z,4648,Security,"Logon with explicit credentials",admin,workstation01
+2024-01-15T08:35:12Z,4672,Security,"Special privileges assigned",admin,workstation01
+2024-01-15T09:15:33Z,4688,Security,"Process creation: powershell.exe",admin,workstation01
+2024-01-15T09:16:45Z,4688,Security,"Process creation: cmd.exe",admin,workstation01
+2024-01-15T09:17:22Z,5156,Security,"Network connection allowed",system,workstation01
+EOF
+
+# Generate sample network logs
+cat > ~/security_logs/network_traffic.csv << 'EOF'
+timestamp,src_ip,dst_ip,src_port,dst_port,protocol,bytes,action
+2024-01-15T08:30:00Z,192.168.1.100,8.8.8.8,53241,53,UDP,128,ALLOW
+2024-01-15T08:31:15Z,192.168.1.100,185.199.108.153,443,443,TCP,2048,ALLOW
+2024-01-15T08:32:30Z,192.168.1.100,suspicious-domain.com,80,80,TCP,4096,BLOCK
+2024-01-15T09:15:45Z,192.168.1.100,command-control.evil,443,443,TCP,1024,ALLOW
+2024-01-15T09:16:00Z,192.168.1.100,data-exfil.bad,21,21,TCP,8192,ALLOW
+EOF
+Task 2: Integrate Machine Learning Models for Enhanced Detection
+Subtask 2.1: Install ML Dependencies
+# Create Python virtual environment
+python3 -m venv ~/ml_env
+source ~/ml_env/bin/activate
+
+# Install ML libraries
+pip install scikit-learn pandas numpy matplotlib seaborn jupyter
+
+# Install Timesketch API client
+pip install timesketch-api-client
+Subtask 2.2: Create Anomaly Detection Model
+# Create ML analysis directory
+mkdir -p ~/ml_analysis
+cd ~/ml_analysis
+
+# Create anomaly detection script
+cat > anomaly_detector.py << 'EOF'
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import LabelEncoder
+import json
+from datetime import datetime
+
+class SecurityAnomalyDetector:
+    def __init__(self):
+        self.model = IsolationForest(contamination=0.1, random_state=42)
+        self.encoders = {}
+    
+    def preprocess_data(self, df):
+        """Preprocess security log data for ML analysis"""
+        # Convert timestamp to hour of day
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['hour'] = df['timestamp'].dt.hour
+        df['day_of_week'] = df['timestamp'].dt.dayofweek
+        
+        # Encode categorical variables
+        categorical_cols = ['source', 'user', 'host']
+        for col in categorical_cols:
+            if col in df.columns:
+                if col not in self.encoders:
+                    self.encoders[col] = LabelEncoder()
+                    df[f'{col}_encoded'] = self.encoders[col].fit_transform(df[col].astype(str))
+                else:
+                    df[f'{col}_encoded'] = self.encoders[col].transform(df[col].astype(str))
+        
+        return df
+    
+    def detect_anomalies(self, data_file):
+        """Detect anomalies in security logs"""
+        df = pd.read_csv(data_file)
+        df = self.preprocess_data(df)
+        
+        # Select features for anomaly detection
+        feature_cols = ['hour', 'day_of_week']
+        if 'event_id' in df.columns:
+            feature_cols.append('event_id')
+        
+        # Add encoded categorical features
+        for col in df.columns:
+            if col.endswith('_encoded'):
+                feature_cols.append(col)
+        
+        X = df[feature_cols].fillna(0)
+        
+        # Fit model and predict anomalies
+        anomalies = self.model.fit_predict(X)
+        df['anomaly'] = anomalies
+        df['anomaly_score'] = self.model.decision_function(X)
+        
+        # Return anomalous events
+        anomalous_events = df[df['anomaly'] == -1].copy()
+        return anomalous_events
+    
+    def generate_report(self, anomalies):
+        """Generate anomaly detection report"""
+        report = {
+            'total_anomalies': len(anomalies),
+            'anomaly_types': {},
+            'high_risk_events': []
+        }
+        
+        if len(anomalies) > 0:
+            # Group by event type
+            if 'event_id' in anomalies.columns:
+                report['anomaly_types'] = anomalies['event_id'].value_counts().to_dict()
+            
+            # Identify high-risk events (lowest anomaly scores)
+            high_risk = anomalies.nsmallest(5, 'anomaly_score')
+            report['high_risk_events'] = high_risk[['timestamp', 'message', 'anomaly_score']].to_dict('records')
+        
+        return report
+
+if __name__ == "__main__":
+    detector = SecurityAnomalyDetector()
+    
+    # Analyze Windows security logs
+    print("Analyzing Windows Security Logs...")
+    win_anomalies = detector.detect_anomalies('/home/ubuntu/security_logs/windows_security.csv')
+    win_report = detector.generate_report(win_anomalies)
+    
+    print(f"Windows Security Anomalies: {win_report['total_anomalies']}")
+    print("High Risk Events:")
+    for event in win_report['high_risk_events']:
+        print(f"  - {event['timestamp']}: {event['message']} (Score: {event['anomaly_score']:.3f})")
+    
+    # Save results
+    win_anomalies.to_csv('windows_anomalies.csv', index=False)
+    
+    with open('anomaly_report.json', 'w') as f:
+        json.dump(win_report, f, indent=2, default=str)
+    
+    print("\nResults saved to windows_anomalies.csv and anomaly_report.json")
+EOF
+
+# Run anomaly detection
+python anomaly_detector.py
+Subtask 2.3: Create Threat Classification Model
+# Create threat classification script
+cat > threat_classifier.py << 'EOF'
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+import joblib
+
+class ThreatClassifier:
+    def __init__(self):
+        self.pipeline = Pipeline([
+            ('tfidf', TfidfVectorizer(max_features=1000, stop_words='english')),
+            ('classifier', MultinomialNB())
+        ])
+        self.threat_categories = [
+            'lateral_movement', 'privilege_escalation', 'data_exfiltration', 
+            'command_control', 'persistence', 'normal'
+        ]
+    
+    def create_training_data(self):
+        """Create synthetic training data for threat classification"""
+        training_data = [
+            ("powershell.exe -enc base64command", "command_control"),
+            ("net user admin password123 /add", "privilege_escalation"),
+            ("schtasks /create /tn backdoor", "persistence"),
+            ("psexec \\\\target cmd.exe", "lateral_movement"),
+            ("copy sensitive.txt \\\\external", "data_exfiltration"),
+            ("user login successful", "normal"),
+            ("file access granted", "normal"),
+            ("wmic process call create", "command_control"),
+            ("reg add HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "persistence"),
+            ("net share admin$ /grant:everyone,full", "privilege_escalation")
+        ]
+        
+        # Expand training data
+        expanded_data = []
+        for text, label in training_data:
+            expanded_data.extend([(text, label)] * 10)  # Duplicate for better training
+        
+        return expanded_data
+    
+    def train_model(self):
+        """Train the threat classification model"""
+        training_data = self.create_training_data()
+        texts, labels = zip(*training_data)
+        
+        self.pipeline.fit(texts, labels)
+        joblib.dump(self.pipeline, 'threat_classifier.pkl')
+        print("Threat classification model trained and saved")
+    
+    def classify_events(self, events_file):
+        """Classify security events"""
+        df = pd.read_csv(events_file)
+        
+        if 'message' not in df.columns:
+            print("No message column found for classification")
+            return df
+        
+        # Load or train model
+        try:
+            self.pipeline = joblib.load('threat_classifier.pkl')
+        except:
+            self.train_model()
+        
+        # Classify events
+        predictions = self.pipeline.predict(df['message'])
+        probabilities = self.pipeline.predict_proba(df['message'])
+        
+        df['threat_category'] = predictions
+        df['confidence'] = np.max(probabilities, axis=1)
+        
+        return df
+
+if __name__ == "__main__":
+    classifier = ThreatClassifier()
+    classifier.train_model()
+    
+    # Classify Windows security events
+    print("\nClassifying Windows Security Events...")
+    classified_events = classifier.classify_events('/home/ubuntu/security_logs/windows_security.csv')
+    
+    # Display results
+    threat_summary = classified_events['threat_category'].value_counts()
+    print("\nThreat Classification Summary:")
+    for category, count in threat_summary.items():
+        print(f"  {category}: {count}")
+    
+    # Show high-confidence threats
+    threats = classified_events[
+        (classified_events['threat_category'] != 'normal') & 
+        (classified_events['confidence'] > 0.7)
+    ]
+    
+    print(f"\nHigh-Confidence Threats Detected: {len(threats)}")
+    for _, event in threats.iterrows():
+        print(f"  - {event['threat_category']}: {event['message']} (Confidence: {event['confidence']:.2f})")
+    
+    # Save results
+    classified_events.to_csv('classified_events.csv', index=False)
+    print("\nResults saved to classified_events.csv")
+EOF
+
+# Run threat classification
+python threat_classifier.py
+Task 3: Hunt for Advanced Persistent Threats (APTs)
+Subtask 3.1: Create APT Hunting Framework
+# Create APT hunting script
+cat > apt_hunter.py << 'EOF'
+import pandas as pd
+import json
+from datetime import datetime, timedelta
+import re
+
+class APTHunter:
+    def __init__(self):
+        self.apt_indicators = {
+            'lateral_movement': [
+                r'psexec',
+                r'wmic.*process.*call.*create',
+                r'net\s+use.*\$',
+                r'powershell.*invoke-command'
+            ],
+            'persistence': [
+                r'schtasks.*create',
+                r'reg.*add.*run',
+                r'wmic.*startup',
+                r'service.*create'
+            ],
+            'data_exfiltration': [
+                r'copy.*\\\\',
+                r'xcopy.*network',
+                r'ftp.*put',
+                r'curl.*upload'
+            ],
+            'command_control': [
+                r'powershell.*-enc',
+                r'certutil.*decode',
+                r'bitsadmin.*transfer',
+                r'wget.*http'
+            ]
+        }
+    
+    def analyze_timeline(self, events_df):
+        """Analyze events for APT behavior patterns"""
+        results = {
+            'suspicious_sequences': [],
+            'apt_indicators': [],
+            'timeline_analysis': {}
+        }
+        
+        # Sort events by timestamp
+        events_df['timestamp'] = pd.to_datetime(events_df['timestamp'])
+        events_df = events_df.sort_values('timestamp')
+        
+        # Look for APT indicators
+        for category, patterns in self.apt_indicators.items():
+            for pattern in patterns:
+                matches = events_df[events_df['message'].str.contains(pattern, case=False, na=False)]
+                if not matches.empty:
+                    for _, match in matches.iterrows():
+                        results['apt_indicators'].append({
+                            'category': category,
+                            'pattern': pattern,
+                            'timestamp': str(match['timestamp']),
+                            'message': match['message'],
+                            'user': match.get('user', 'unknown'),
+                            'host': match.get('host', 'unknown')
+                        })
+        
+        # Analyze suspicious sequences (multiple APT activities within short timeframe)
+        apt_events = pd.DataFrame(results['apt_indicators'])
+        if not apt_events.empty:
+            apt_events['timestamp'] = pd.to_datetime(apt_events['timestamp'])
+            
+            # Group events within 1-hour windows
+            for i, event in apt_events.iterrows():
+                window_start = event['timestamp']
+                window_end = window_start + timedelta(hours=1)
+                
+                window_events = apt_events[
+                    (apt_events['timestamp'] >= window_start) & 
+                    (apt_events['timestamp'] <= window_end)
+                ]
+                
+                if len(window_events) >= 3:  # 3+ APT indicators in 1 hour
+                    sequence = {
+                        'start_time': str(window_start),
+                        'end_time': str(window_end),
+                        'event_count': len(window_events),
+                        'categories': list(window_events['category'].unique()),
+                        'events': window_events.to_dict('records')
+                    }
+                    
+                    # Avoid duplicates
+                    if sequence not in results['suspicious_sequences']:
+                        results['suspicious_sequences'].append(sequence)
+        
+        # Timeline analysis summary
+        results['timeline_analysis'] = {
+            'total_events': len(events_df),
+            'apt_indicators_found': len(results['apt_indicators']),
+            'suspicious_sequences': len(results['suspicious_sequences']),
+            'time_range': {
+                'start': str(events_df['timestamp'].min()),
+                'end': str(events_df['timestamp'].max())
+            }
+        }
+        
+        return results
+    
+    def generate_hunt_report(self, hunt_results):
+        """Generate comprehensive APT hunting report"""
+        report = {
+            'executive_summary': {},
+            'detailed_findings': hunt_results,
+            'recommendations': []
+        }
+        
+        # Executive summary
+        total_indicators = hunt_results['timeline_analysis']['apt_indicators_found']
+        suspicious_sequences = hunt_results['timeline_analysis']['suspicious_sequences']
+        
+        if total_indicators > 0:
+            report['executive_summary']['risk_level'] = 'HIGH' if suspicious_sequences > 0 else 'MEDIUM'
+            report['executive_summary']['key_findings'] = [
+                f"{total_indicators} APT indicators detected",
+                f"{suspicious_sequences} suspicious activity sequences identified"
+            ]
+        else:
+            report['executive_summary']['risk_level'] = 'LOW'
+            report['executive_summary']['key_findings'] = ["No significant APT indicators detected"]
+        
+        # Recommendations
+        if suspicious_sequences > 0:
+            report['recommendations'].extend([
+                "Immediate investigation of suspicious activity sequences required",
+                "Review user accounts involved in flagged activities",
+                "Implement additional monitoring on affected systems"
+            ])
+        elif total_indicators > 0:
+            report['recommendations'].extend([
+                "Monitor flagged activities for escalation",
+                "Review security policies and access controls"
+            ])
+        else:
+            report['recommendations'].append("Continue regular monitoring and threat hunting activities")
+        
+        return report
+
+if __name__ == "__main__":
+    hunter = APTHunter()
+    
+    # Load and analyze security events
+    print("Loading security events for APT hunting...")
+    
+    # Combine all security data
+    windows_events = pd.read_csv('/home/ubuntu/security_logs/windows_security.csv')
+    
+    # Add some synthetic APT-like events for demonstration
+    apt_events = pd.DataFrame([
+        {
+            'timestamp': '2024-01-15T09:18:00Z',
+            'event_id': 4688,
+            'source': 'Security',
+            'message': 'Process creation: psexec.exe \\\\target cmd.exe',
+            'user': 'admin',
+            'host': 'workstation01'
+        },
+        {
+            'timestamp': '2024-01-15T09:19:15Z',
+            'event_id': 4688,
+            'source': 'Security',
+            'message': 'Process creation: powershell.exe -enc SGVsbG8gV29ybGQ=',
+            'user': 'admin',
+            'host': 'workstation01'
+        },
+        {
+            'timestamp': '2024-01-15T09:20:30Z',
+            'event_id': 4688,
+            'source': 'Security',
+            'message': 'schtasks /create /tn "WindowsUpdate" /tr "malware.exe"',
+            'user': 'admin',
+            'host': 'workstation01'
+        }
+    ])
+    
+    # Combine events
+    all_events = pd.concat([windows_events, apt_events], ignore_index=True)
+    
+    # Perform APT hunting
+    print("Performing APT hunting analysis...")
+    hunt_results = hunter.analyze_timeline(all_events)
+    
+    # Generate report
+    report = hunter.generate_hunt_report(hunt_results)
+    
+    # Display results
+    print(f"\n=== APT HUNTING REPORT ===")
+    print(f"Risk Level: {report['executive_summary']['risk_level']}")
+    print(f"APT Indicators Found: {hunt_results['timeline_analysis']['apt_indicators_found']}")
+    print(f"Suspicious Sequences: {hunt_results['timeline_analysis']['suspicious_sequences']}")
+    
+    if hunt_results['apt_indicators']:
+        print(f"\nDetected APT Indicators:")
+        for indicator in hunt_results['apt_indicators']:
+            print(f"  - {indicator['category']}: {indicator['message']}")
+    
+    if hunt_results['suspicious_sequences']:
+        print(f"\nSuspicious Activity Sequences:")
+        for seq in hunt_results['suspicious_sequences']:
+            print(f"  - {seq['event_count']} events from {seq['start_time']} to {seq['end_time']}")
+            print(f"    Categories: {', '.join(seq['categories'])}")
+    
+    print(f"\nRecommendations:")
+    for rec in report['recommendations']:
+        print(f"  - {rec}")
+    
+    # Save detailed report
+    with open('apt_hunt_report.json', 'w') as f:
+        json.dump(report, f, indent=2, default=str)
+    
+    print(f"\nDetailed report saved to apt_hunt_report.json")
+EOF
+
+# Run APT hunting analysis
+python apt_hunter.py
+Subtask 3.2: Import Data into Timesketch
+# Create Timesketch import script
+cat > import_to_timesketch.py << 'EOF'
+import pandas as pd
+import json
+from datetime import datetime
+
+def convert_to_timesketch_format(csv_file, output_file):
+    """Convert CSV data to Timesketch JSONL format"""
+    df = pd.read_csv(csv_file)
+    
+    with open(output_file, 'w') as f:
+        for _, row in df.iterrows():
+            # Create Timesketch event
+            event = {
+                'datetime': row['timestamp'],
+                'timestamp_desc': 'Event Time',
+                'message': row.get('message', ''),
+                'source_short': row.get('source', 'Unknown'),
+                'source_long': f"{row.get('source', 'Unknown')} - {csv_file}",
+                'data_type': 'security_log'
+            }
+            
+            # Add additional fields
+            for col in row.index:
+                if col not in ['timestamp', 'message', 'source']:
+                    event[col] = str(row[col])
+            
+            f.write(json.dumps(event) + '\n')
+
+# Convert security logs to Timesketch format
+print("Converting logs to Timesketch format...")
+convert_to_timesketch_format('/home/ubuntu/security_logs/windows_security.csv', 'windows_security.jsonl')
+convert_to_timesketch_format('/home/ubuntu/security_logs/network_traffic.csv', 'network_traffic.jsonl')
+
+# Convert ML analysis results
+if pd.io.common.file_exists('classified_events.csv'):
+    convert_to_timesketch_format('classified_events.csv', 'classified_events.jsonl')
+
+print("Timesketch import files created:")
+print("  - windows_security.jsonl")
+print("  - network_traffic.jsonl")
+print("  - classified_events.jsonl")
+EOF
+
+# Run conversion
+python import_to_timesketch.py
+
+# Import data into Timesketch (manual step - would typically use API)
+echo "To import data into Timesketch:"
+echo "1. Access Timesketch web interface at http://localhost:5000"
+echo "2. Login with admin/admin123"
+echo "3. Create new sketch or use existing 'APT Hunt Lab'"
+echo "4. Upload the generated .jsonl files"
+Subtask 3.3: Create Hunting Dashboard
+# Create hunting dashboard script
+cat > hunting_dashboard.py << 'EOF'
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import json
+from datetime import datetime
+import numpy as np
+
+class HuntingDashboard:
+    def __init__(self):
+        plt.style.use('default')
+        sns.set_palette("husl")
+    
+    def create_dashboard(self):
+        """Create comprehensive hunting dashboard"""
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle('AI-Assisted Threat Hunting Dashboard', fontsize=16, fontweight='bold')
+        
+        # Load data
+        try:
+            classified_events = pd.read_csv('classified_events.csv')
+            anomalies = pd.read_csv('windows_anomalies.csv')
+            
+            with open('apt_hunt_report.json', 'r') as f:
+                apt_report = json.load(f)
+        except:
+            print("Warning: Some data files not found. Creating sample dashboard.")
+            return
+        
+        # 1. Threat Category Distribution
+        threat_counts = classified_events['threat_category'].value_counts()
+        axes[0,0].pie(threat_counts.values, labels=threat_counts.index, autopct='%1.1f%%')
+        axes[0,0].set_title('Threat Category Distribution')
+        
+        # 2. Anomaly Scores Timeline
+        if not anomalies.empty:
+            anomalies['timestamp'] = pd.to_datetime(anomalies['timestamp'])
+            axes[0,1].scatter(anomalies['timestamp'], anomalies['anomaly_score'], alpha=0.7)
+            axes[0,1].set_title('Anomaly Scores Over Time')
+            axes[0,1].tick_params(axis='x', rotation=45)
+        
+        # 3. APT Indicators by Category
+        apt_indicators = apt_report['detailed_findings']['apt_indicators']
+        if apt_indicators:
+            categories = [ind['category'] for ind in apt_indicators]
+            category_counts = pd.Series(categories).value_counts()
+            axes[0,2].bar(category_counts.index, category_counts.values)
+            axes[0,2].set_title('APT Indicators by Category')
+            axes[0,2].tick_params(axis='x', rotation=45)
+        
+        # 4. Event Timeline
+        classified_events['timestamp'] = pd.to_datetime(classified_events['timestamp'])
+        classified_events['hour'] = classified_events['timestamp'].dt.hour
+        hourly_counts = classified_events['hour'].value_counts().sort_index()
+        axes[1,0].plot(hourly_counts.index, hourly_counts.values, marker='o')
+        axes[1,0].set_title('Events by Hour of Day')
+        axes[1,0].set_xlabel('Hour')
+        axes[1,0].set_ylabel('Event Count')
+        
+        # 5. Confidence Distribution
+        axes[1,1].hist(classified_events['confidence'], bins=20, alpha=0.7)
+        axes[1,1].set_title('Classification Confidence Distribution')
+        axes[1,1].set_xlabel('Confidence Score')
+        axes[1,1].set_ylabel('Frequency')
+        
+        # 6. Risk Summary
+        risk_data = {
+            'Total Events': len(classified_events),
+            'Anomalies': len(anomalies),
+            'APT Indicators': len(apt_indicators),
+            'High Risk': len(classified_events[classified_events['threat_category'] != 'normal'])
+        }
+        
+        axes[1,2].bar(risk_data.keys(), risk_data.values())
+        axes[1,2].set_title('Security Risk Summary')
+        axes[1,2].tick_params(axis='x', rotation=45)
+        
+        plt.tight_layout()
+        plt.savefig('hunting_dashboard.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Create summary report
+        summary = {
+            'dashboard_generated': str(datetime.now()),
+            'total_events_analyzed': len(classified_events),
+            'anomalies_detected': len(anomalies),
+            'apt_indicators_found': len(apt_indicators),
+            'risk_level': apt_report['executive_summary']['risk_level'],
+            'key_findings': apt_report['executive_summary']['key_findings']
+        }
+        
+        with open('dashboard_summary.json', 'w') as f:
+            json.dump(summary, f, indent=2)
+        
+        print("Hunting dashboard created successfully!")
+        print(f"Dashboard saved as: hunting_dashboard.png")
+        print(f"Summary saved as: dashboard_summary.json")
+        
+        return summary
+
+if __name__ == "__main__":
+    dashboard = HuntingDashboard()
+    summary = dashboard.create_dashboard()
+    
+    if summary:
+        print(f"\n=== HUNTING DASHBOARD SUMMARY ===")
+        print(f"Total Events Analyzed: {summary['total_events_analyzed']}")
+        print(f"Anomalies Detected: {summary['anomalies_detected']}")
+        print(f"APT Indicators Found: {summary['apt_indicators_found']}")
+        print(f"Overall Risk Level: {summary['risk_level']}")
+EOF
+
+# Generate hunting dashboard
+python hunting_dashboard.py
+Verification and Testing
+Verify Timesketch Deployment
+# Check Timesketch services
+sudo docker-compose ps
+
+# Test web interface accessibility
+curl -I http://localhost:5000
+
+# Verify data files created
+ls -la ~/security_logs/
+ls -la ~/ml_analysis/
+Verify ML Models
+# Check ML model files
+ls -la ~/ml_analysis/*.pkl ~/ml_analysis/*.csv ~/ml_analysis/*.json
+
+# Verify anomaly detection results
+head -5 ~/ml_analysis/windows_anomalies.csv
+
+# Check threat classification results
+head -5 ~/ml_analysis/classified_events.csv
+Verify APT Hunting Results
+# Display APT hunting summary
+cat ~/ml_analysis/apt_hunt_report.json | jq '.executive_summary'
+
+# Show dashboard files
+ls -la ~/ml_analysis/*.png ~/ml_analysis/dashboard_summary.json
+Conclusion
+You have successfully deployed an AI-assisted threat hunting platform using Timesketch and machine learning integrations. This lab demonstrated:
+
+Timeline Analysis: Deployed Timesketch for comprehensive security event timeline analysis
+ML Integration: Implemented anomaly detection and threat classification models using scikit-learn
+APT Hunting: Created automated hunting capabilities to detect advanced persistent threat patterns
+AI-Assisted Analysis: Combined multiple ML techniques for enhanced threat detection accuracy
+This integrated approach enables security analysts to leverage artificial intelligence for more effective threat hunting, reducing false positives and identifying sophisticated attack patterns that traditional rule-based systems might miss. The combination of timeline analysis, anomaly detection, and threat classification provides a comprehensive foundation for modern security operations centers.
