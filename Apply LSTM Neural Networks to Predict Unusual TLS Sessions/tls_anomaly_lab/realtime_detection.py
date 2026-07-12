@@ -95,3 +95,106 @@ detector = TLSAnomalyDetector(
     'data/scaler.pkl',
     'data/encoders.pkl'
 )
+
+def simulate_tls_session():
+    """Simulate a TLS session with random characteristics"""
+    
+    # Randomly decide if this should be anomalous
+    is_anomalous = random.random() < 0.15
+    
+    if is_anomalous:
+        # Generate anomalous session
+        session = {
+            'timestamp': datetime.now(),
+            'src_ip': f"192.168.1.{random.randint(1, 254)}",
+            'dst_ip': f"10.0.{random.randint(1, 255)}.{random.randint(1, 255)}",
+            'src_port': random.randint(1024, 65535),
+            'dst_port': 443,
+            'handshake_time': random.uniform(2.0, 5.0),  # Slow handshake
+            'cert_size': random.randint(256, 1024),      # Small certificate
+            'cipher_suite': random.choice(['TLS_RSA_WITH_RC4_128_MD5', 'SSL_RSA_WITH_NULL_MD5']),
+            'tls_version': 'TLSv1.2',
+            'session_duration': random.uniform(1, 10),    # Short duration
+            'bytes_sent': random.randint(100, 1000),      # Low traffic
+            'bytes_received': random.randint(100, 2000),
+            'true_label': 1
+        }
+    else:
+        # Generate normal session
+        session = {
+            'timestamp': datetime.now(),
+            'src_ip': f"192.168.1.{random.randint(1, 254)}",
+            'dst_ip': f"10.0.{random.randint(1, 255)}.{random.randint(1, 255)}",
+            'src_port': random.randint(1024, 65535),
+            'dst_port': 443,
+            'handshake_time': random.uniform(0.1, 0.3),   # Fast handshake
+            'cert_size': random.randint(1536, 4096),      # Normal certificate
+            'cipher_suite': random.choice(['TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256']),
+            'tls_version': 'TLSv1.3',
+            'session_duration': random.uniform(20, 60),   # Normal duration
+            'bytes_sent': random.randint(3000, 8000),     # Normal traffic
+            'bytes_received': random.randint(10000, 25000),
+            'true_label': 0
+        }
+    
+    return session
+
+def run_realtime_detection(num_sessions=50):
+    """Run real-time anomaly detection simulation"""
+    
+    print("\nStarting real-time TLS anomaly detection...")
+    print("="*70)
+    print(f"{'Session':<8} {'True':<6} {'Pred':<6} {'Confidence':<12} {'Status':<15} {'Details'}")
+    print("="*70)
+    
+    correct_predictions = 0
+    total_predictions = 0
+    
+    for i in range(num_sessions):
+        # Simulate a TLS session
+        session = simulate_tls_session()
+        
+        # Detect anomaly
+        is_anomaly, confidence = detector.detect_anomaly(session)
+        
+        if is_anomaly is not None:  # Only count when we have enough data
+            total_predictions += 1
+            predicted_label = 1 if is_anomaly else 0
+            true_label = session['true_label']
+            
+            # Check if prediction is correct
+            is_correct = predicted_label == true_label
+            if is_correct:
+                correct_predictions += 1
+            
+            # Determine status
+            if true_label == 1 and predicted_label == 1:
+                status = "✓ DETECTED"
+            elif true_label == 1 and predicted_label == 0:
+                status = "✗ MISSED"
+            elif true_label == 0 and predicted_label == 1:
+                status = "✗ FALSE ALARM"
+            else:
+                status = "✓ NORMAL"
+            
+            # Format details
+            details = f"HS:{session['handshake_time']:.2f}s, Cert:{session['cert_size']}"
+            
+            print(f"{i+1:<8} {true_label:<6} {predicted_label:<6} {confidence:<12.4f} {status:<15} {details}")
+        else:
+            print(f"{i+1:<8} {'?':<6} {'?':<6} {'N/A':<12} {'BUFFERING':<15} Building sequence...")
+        
+        # Small delay to simulate real-time processing
+        time.sleep(0.1)
+    
+    # Calculate accuracy
+    if total_predictions > 0:
+        accuracy = correct_predictions / total_predictions
+        print("="*70)
+        print(f"Real-time Detection Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+        print(f"Total Predictions: {total_predictions}")
+        print(f"Correct Predictions: {correct_predictions}")
+
+# Run real-time simulation
+run_realtime_detection(50)
+
