@@ -82,3 +82,49 @@ history = model.fit(
 # Save trained model
 model.save('data/lstm_tls_anomaly_model.h5')
 print("\nModel saved successfully!")
+# Continue in train_lstm.py
+
+def plot_training_history(history):
+    """Plot training history"""
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # Loss
+    axes[0, 0].plot(history.history['loss'], label='Training Loss')
+    axes[0, 0].plot(history.history['val_loss'], label='Validation Loss')
+    axes[0, 0].set_title('Model Loss')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].legend()
+    
+    # Accuracy
+    axes[0, 1].plot(history.history['accuracy'], label='Training Accuracy')
+    axes[0, 1].plot(history.history['val_accuracy'], label='Validation Accuracy')
+    axes[0, 1].set_title('Model Accuracy')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Accuracy')
+    axes[0, 1].legend()
+    
+    # Precision
+    axes[1, 0].plot(history.history['precision'], label='Training Precision')
+    axes[1, 0].plot(history.history['val_precision'], label='Validation Precision')
+    axes[1, 0].set_title('Model Precision')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Precision')
+    axes[1, 0].legend()
+    
+    # Recall
+    axes[1, 1].plot(history.history['recall'], label='Training Recall')
+    axes[1, 1].plot(history.history['val_recall'], label='Validation Recall')
+    axes[1, 1].set_title('Model Recall')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('Recall')
+    axes[1, 1].legend()
+    
+    plt.tight_layout()
+    plt.savefig('data/training_history.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+# Plot training history
+plot_training_history(history)
+
