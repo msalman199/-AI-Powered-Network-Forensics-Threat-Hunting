@@ -1,0 +1,739 @@
+Detect Anomalies in Encrypted Channels with Autoencoders
+Learning Objectives
+By completing this lab, you will:
+
+Implement autoencoders for anomaly detection in encrypted network traffic
+Generate and analyze encrypted network traffic patterns
+Identify unusual communication behaviors using machine learning techniques
+Apply deep learning models to cybersecurity scenarios
+Prerequisites
+Basic understanding of Python programming
+Familiarity with neural networks and machine learning concepts
+Knowledge of network traffic analysis fundamentals
+Understanding of encryption concepts
+Lab Environment
+Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your dedicated environment. The provided Linux machine is bare metal with no pre-installed tools, so you will install all required software during the lab.
+
+Task 1: Collect Encrypted Traffic Data
+Subtask 1.1: Install Required Tools
+Update the system and install necessary packages:
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3 python3-pip tcpdump wireshark-common tshark
+pip3 install tensorflow keras numpy pandas matplotlib scikit-learn scapy
+Subtask 1.2: Generate Encrypted Traffic Dataset
+Create a Python script to generate simulated encrypted traffic:
+
+# traffic_generator.py
+import numpy as np
+import pandas as pd
+from scapy.all import *
+import time
+import threading
+import random
+
+class TrafficGenerator:
+    def __init__(self):
+        self.normal_patterns = []
+        self.anomaly_patterns = []
+    
+    def generate_normal_traffic(self, count=1000):
+        """Generate normal encrypted traffic patterns"""
+        normal_data = []
+        
+        for i in range(count):
+            # Simulate normal HTTPS traffic characteristics
+            packet_size = np.random.normal(1200, 300)  # Normal web traffic size
+            inter_arrival_time = np.random.exponential(0.1)  # Normal timing
+            flow_duration = np.random.normal(5.0, 1.5)  # Normal session duration
+            bytes_per_second = packet_size / inter_arrival_time
+            
+            # Encrypted payload entropy (high for encrypted data)
+            entropy = np.random.normal(7.8, 0.2)  # High entropy for encrypted
+            
+            normal_data.append([
+                packet_size, inter_arrival_time, flow_duration, 
+                bytes_per_second, entropy, 0  # 0 = normal
+            ])
+        
+        return normal_data
+    
+    def generate_anomaly_traffic(self, count=100):
+        """Generate anomalous encrypted traffic patterns"""
+        anomaly_data = []
+        
+        for i in range(count):
+            anomaly_type = random.choice(['exfiltration', 'c2', 'tunnel'])
+            
+            if anomaly_type == 'exfiltration':
+                # Data exfiltration: large, consistent packets
+                packet_size = np.random.normal(8000, 500)
+                inter_arrival_time = np.random.normal(0.05, 0.01)  # Very regular
+                flow_duration = np.random.normal(30.0, 5.0)  # Long sessions
+                
+            elif anomaly_type == 'c2':
+                # Command & Control: small, regular beacons
+                packet_size = np.random.normal(200, 50)
+                inter_arrival_time = np.random.normal(60.0, 5.0)  # Regular beacons
+                flow_duration = np.random.normal(1.0, 0.2)  # Short sessions
+                
+            else:  # tunnel
+                # Tunneling: unusual size distribution
+                packet_size = np.random.choice([100, 1500, 9000])  # Bimodal
+                inter_arrival_time = np.random.exponential(0.01)
+                flow_duration = np.random.normal(15.0, 8.0)
+            
+            bytes_per_second = packet_size / max(inter_arrival_time, 0.001)
+            entropy = np.random.normal(7.9, 0.1)  # Still encrypted
+            
+            anomaly_data.append([
+                packet_size, inter_arrival_time, flow_duration,
+                bytes_per_second, entropy, 1  # 1 = anomaly
+            ])
+        
+        return anomaly_data
+
+# Generate dataset
+generator = TrafficGenerator()
+normal_traffic = generator.generate_normal_traffic(2000)
+anomaly_traffic = generator.generate_anomaly_traffic(200)
+
+# Combine and save dataset
+all_traffic = normal_traffic + anomaly_traffic
+columns = ['packet_size', 'inter_arrival_time', 'flow_duration', 
+           'bytes_per_second', 'entropy', 'label']
+
+df = pd.DataFrame(all_traffic, columns=columns)
+df = df.sample(frac=1).reset_index(drop=True)  # Shuffle
+df.to_csv('encrypted_traffic_dataset.csv', index=False)
+
+print(f"Generated dataset with {len(df)} samples")
+print(f"Normal traffic: {len(df[df['label']==0])}")
+print(f"Anomalous traffic: {len(df[df['label']==1])}")
+Run the traffic generator:
+
+python3 traffic_generator.py
+Subtask 1.3: Analyze Generated Data
+Create a data analysis script:
+
+# analyze_data.py
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Load and examine the dataset
+df = pd.read_csv('encrypted_traffic_dataset.csv')
+
+print("Dataset Overview:")
+print(df.describe())
+print("\nClass Distribution:")
+print(df['label'].value_counts())
+
+# Visualize feature distributions
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+features = ['packet_size', 'inter_arrival_time', 'flow_duration', 
+           'bytes_per_second', 'entropy']
+
+for i, feature in enumerate(features):
+    row, col = i // 3, i % 3
+    
+    # Plot normal vs anomaly distributions
+    normal_data = df[df['label'] == 0][feature]
+    anomaly_data = df[df['label'] == 1][feature]
+    
+    axes[row, col].hist(normal_data, alpha=0.7, label='Normal', bins=30)
+    axes[row, col].hist(anomaly_data, alpha=0.7, label='Anomaly', bins=30)
+    axes[row, col].set_title(f'{feature} Distribution')
+    axes[row, col].legend()
+
+plt.tight_layout()
+plt.savefig('traffic_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("Analysis complete. Check traffic_analysis.png for visualizations.")
+python3 analyze_data.py
+Task 2: Implement Autoencoders for Anomaly Detection
+Subtask 2.1: Prepare Data for Training
+Create the data preprocessing script:
+
+# preprocess_data.py
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split
+import pickle
+
+class DataPreprocessor:
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.feature_columns = ['packet_size', 'inter_arrival_time', 
+                               'flow_duration', 'bytes_per_second', 'entropy']
+    
+    def prepare_data(self, filepath):
+        """Load and preprocess the traffic data"""
+        df = pd.read_csv(filepath)
+        
+        # Extract features (exclude label for unsupervised learning)
+        X = df[self.feature_columns].values
+        y = df['label'].values
+        
+        # Handle any infinite or NaN values
+        X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        # Split data - use only normal traffic for training autoencoder
+        X_train_full, X_test, y_train_full, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        # For autoencoder training, use only normal traffic
+        normal_mask = y_train_full == 0
+        X_train_normal = X_train_full[normal_mask]
+        
+        # Scale the data
+        X_train_scaled = self.scaler.fit_transform(X_train_normal)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        # Save scaler for later use
+        with open('scaler.pkl', 'wb') as f:
+            pickle.dump(self.scaler, f)
+        
+        return X_train_scaled, X_test_scaled, y_test, X_train_normal.shape[0]
+
+# Preprocess the data
+preprocessor = DataPreprocessor()
+X_train, X_test, y_test, normal_samples = preprocessor.prepare_data('encrypted_traffic_dataset.csv')
+
+print(f"Training samples (normal only): {X_train.shape[0]}")
+print(f"Test samples: {X_test.shape[0]}")
+print(f"Feature dimensions: {X_train.shape[1]}")
+
+# Save preprocessed data
+np.save('X_train.npy', X_train)
+np.save('X_test.npy', X_test)
+np.save('y_test.npy', y_test)
+
+print("Data preprocessing complete.")
+python3 preprocess_data.py
+Subtask 2.2: Build and Train Autoencoder
+Create the autoencoder implementation:
+
+# autoencoder_model.py
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import classification_report, confusion_matrix
+import pickle
+
+class AnomalyAutoencoder:
+    def __init__(self, input_dim):
+        self.input_dim = input_dim
+        self.model = None
+        self.threshold = None
+        
+    def build_model(self):
+        """Build the autoencoder architecture"""
+        # Encoder
+        input_layer = keras.Input(shape=(self.input_dim,))
+        encoded = layers.Dense(32, activation='relu')(input_layer)
+        encoded = layers.Dense(16, activation='relu')(encoded)
+        encoded = layers.Dense(8, activation='relu')(encoded)  # Bottleneck
+        
+        # Decoder
+        decoded = layers.Dense(16, activation='relu')(encoded)
+        decoded = layers.Dense(32, activation='relu')(decoded)
+        decoded = layers.Dense(self.input_dim, activation='linear')(decoded)
+        
+        # Create autoencoder
+        self.model = keras.Model(input_layer, decoded)
+        self.model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        
+        return self.model
+    
+    def train(self, X_train, epochs=100, batch_size=32, validation_split=0.2):
+        """Train the autoencoder"""
+        if self.model is None:
+            self.build_model()
+        
+        # Add early stopping
+        early_stopping = keras.callbacks.EarlyStopping(
+            monitor='val_loss', patience=10, restore_best_weights=True
+        )
+        
+        # Train the model
+        history = self.model.fit(
+            X_train, X_train,  # Autoencoder learns to reconstruct input
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_split=validation_split,
+            callbacks=[early_stopping],
+            verbose=1
+        )
+        
+        return history
+    
+    def calculate_threshold(self, X_train, percentile=95):
+        """Calculate anomaly threshold based on reconstruction error"""
+        predictions = self.model.predict(X_train)
+        mse = np.mean(np.power(X_train - predictions, 2), axis=1)
+        self.threshold = np.percentile(mse, percentile)
+        return self.threshold
+    
+    def predict_anomalies(self, X_test):
+        """Predict anomalies based on reconstruction error"""
+        predictions = self.model.predict(X_test)
+        mse = np.mean(np.power(X_test - predictions, 2), axis=1)
+        anomalies = mse > self.threshold
+        return anomalies, mse
+
+# Load preprocessed data
+X_train = np.load('X_train.npy')
+X_test = np.load('X_test.npy')
+y_test = np.load('y_test.npy')
+
+print(f"Training autoencoder with {X_train.shape[0]} normal samples...")
+
+# Create and train autoencoder
+autoencoder = AnomalyAutoencoder(input_dim=X_train.shape[1])
+model = autoencoder.build_model()
+
+print("Model Architecture:")
+model.summary()
+
+# Train the model
+history = autoencoder.train(X_train, epochs=50, batch_size=32)
+
+# Calculate threshold
+threshold = autoencoder.calculate_threshold(X_train, percentile=95)
+print(f"Anomaly threshold: {threshold:.6f}")
+
+# Save the trained model
+model.save('anomaly_autoencoder.h5')
+with open('threshold.pkl', 'wb') as f:
+    pickle.dump(threshold, f)
+
+print("Model training complete and saved.")
+python3 autoencoder_model.py
+Task 3: Identify Unusual Patterns in Encrypted Communications
+Subtask 3.1: Evaluate Anomaly Detection Performance
+Create the evaluation script:
+
+# evaluate_model.py
+import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+import pickle
+import seaborn as sns
+
+class ModelEvaluator:
+    def __init__(self):
+        self.model = tf.keras.models.load_model('anomaly_autoencoder.h5')
+        with open('threshold.pkl', 'rb') as f:
+            self.threshold = pickle.load(f)
+    
+    def evaluate_performance(self, X_test, y_test):
+        """Evaluate the autoencoder's anomaly detection performance"""
+        # Get predictions
+        predictions = self.model.predict(X_test)
+        mse = np.mean(np.power(X_test - predictions, 2), axis=1)
+        y_pred = (mse > self.threshold).astype(int)
+        
+        # Print classification report
+        print("Classification Report:")
+        print(classification_report(y_test, y_pred, 
+                                   target_names=['Normal', 'Anomaly']))
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=['Normal', 'Anomaly'],
+                   yticklabels=['Normal', 'Anomaly'])
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.savefig('confusion_matrix.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # ROC curve
+        fpr, tpr, _ = roc_curve(y_test, mse)
+        roc_auc = auc(fpr, tpr)
+        
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, 
+                label=f'ROC curve (AUC = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('ROC Curve for Anomaly Detection')
+        plt.legend(loc="lower right")
+        plt.savefig('roc_curve.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return mse, y_pred, roc_auc
+    
+    def analyze_reconstruction_errors(self, X_test, y_test, mse):
+        """Analyze reconstruction errors for different traffic types"""
+        plt.figure(figsize=(12, 8))
+        
+        # Plot reconstruction errors
+        normal_errors = mse[y_test == 0]
+        anomaly_errors = mse[y_test == 1]
+        
+        plt.subplot(2, 2, 1)
+        plt.hist(normal_errors, bins=50, alpha=0.7, label='Normal Traffic', color='blue')
+        plt.hist(anomaly_errors, bins=50, alpha=0.7, label='Anomalous Traffic', color='red')
+        plt.axvline(self.threshold, color='black', linestyle='--', label='Threshold')
+        plt.xlabel('Reconstruction Error (MSE)')
+        plt.ylabel('Frequency')
+        plt.title('Distribution of Reconstruction Errors')
+        plt.legend()
+        
+        # Box plot
+        plt.subplot(2, 2, 2)
+        data_to_plot = [normal_errors, anomaly_errors]
+        plt.boxplot(data_to_plot, labels=['Normal', 'Anomaly'])
+        plt.axhline(self.threshold, color='red', linestyle='--', label='Threshold')
+        plt.ylabel('Reconstruction Error (MSE)')
+        plt.title('Reconstruction Error Distribution')
+        plt.legend()
+        
+        # Error over samples
+        plt.subplot(2, 1, 2)
+        plt.plot(mse, alpha=0.7)
+        plt.axhline(self.threshold, color='red', linestyle='--', label='Threshold')
+        colors = ['blue' if label == 0 else 'red' for label in y_test]
+        plt.scatter(range(len(mse)), mse, c=colors, alpha=0.6, s=10)
+        plt.xlabel('Sample Index')
+        plt.ylabel('Reconstruction Error (MSE)')
+        plt.title('Reconstruction Errors Across Test Samples')
+        plt.legend(['Reconstruction Error', 'Threshold', 'Normal', 'Anomaly'])
+        
+        plt.tight_layout()
+        plt.savefig('reconstruction_analysis.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+# Load test data
+X_test = np.load('X_test.npy')
+y_test = np.load('y_test.npy')
+
+# Evaluate model
+evaluator = ModelEvaluator()
+mse, y_pred, roc_auc = evaluator.evaluate_performance(X_test, y_test)
+
+print(f"\nModel Performance Summary:")
+print(f"ROC AUC Score: {roc_auc:.3f}")
+print(f"Threshold used: {evaluator.threshold:.6f}")
+
+# Analyze reconstruction errors
+evaluator.analyze_reconstruction_errors(X_test, y_test, mse)
+
+print("Evaluation complete. Check generated plots for detailed analysis.")
+python3 evaluate_model.py
+Subtask 3.2: Real-time Anomaly Detection Simulation
+Create a real-time detection simulator:
+
+# realtime_detection.py
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import pickle
+import time
+import matplotlib.pyplot as plt
+from collections import deque
+
+class RealTimeAnomalyDetector:
+    def __init__(self):
+        self.model = tf.keras.models.load_model('anomaly_autoencoder.h5')
+        with open('threshold.pkl', 'rb') as f:
+            self.threshold = pickle.load(f)
+        with open('scaler.pkl', 'rb') as f:
+            self.scaler = pickle.load(f)
+        
+        self.detection_history = deque(maxlen=100)
+        self.error_history = deque(maxlen=100)
+        
+    def process_traffic_sample(self, sample):
+        """Process a single traffic sample for anomaly detection"""
+        # Scale the sample
+        sample_scaled = self.scaler.transform([sample])
+        
+        # Get reconstruction
+        reconstruction = self.model.predict(sample_scaled, verbose=0)
+        
+        # Calculate reconstruction error
+        mse = np.mean(np.power(sample_scaled - reconstruction, 2))
+        
+        # Determine if anomaly
+        is_anomaly = mse > self.threshold
+        
+        # Store in history
+        self.detection_history.append(is_anomaly)
+        self.error_history.append(mse)
+        
+        return is_anomaly, mse
+    
+    def simulate_realtime_detection(self, test_data, labels, delay=0.1):
+        """Simulate real-time anomaly detection"""
+        print("Starting real-time anomaly detection simulation...")
+        print("Press Ctrl+C to stop\n")
+        
+        anomaly_count = 0
+        total_count = 0
+        
+        try:
+            for i, (sample, true_label) in enumerate(zip(test_data, labels)):
+                is_anomaly, error = self.process_traffic_sample(sample)
+                total_count += 1
+                
+                if is_anomaly:
+                    anomaly_count += 1
+                    status = "🚨 ANOMALY DETECTED"
+                    print(f"Sample {i+1:4d}: {status} | Error: {error:.6f} | True: {'Anomaly' if true_label else 'Normal'}")
+                else:
+                    if i % 20 == 0:  # Print every 20th normal sample
+                        print(f"Sample {i+1:4d}: Normal Traffic    | Error: {error:.6f} | True: {'Anomaly' if true_label else 'Normal'}")
+                
+                time.sleep(delay)
+                
+                # Print summary every 50 samples
+                if (i + 1) % 50 == 0:
+                    detection_rate = (anomaly_count / total_count) * 100
+                    print(f"\n--- Summary after {i+1} samples ---")
+                    print(f"Anomalies detected: {anomaly_count}/{total_count} ({detection_rate:.1f}%)")
+                    print(f"Current threshold: {self.threshold:.6f}")
+                    print("-" * 40 + "\n")
+                    
+        except KeyboardInterrupt:
+            print("\nReal-time detection stopped by user.")
+        
+        return anomaly_count, total_count
+    
+    def plot_detection_history(self):
+        """Plot the recent detection history"""
+        if len(self.error_history) == 0:
+            return
+        
+        plt.figure(figsize=(12, 6))
+        
+        plt.subplot(1, 2, 1)
+        errors = list(self.error_history)
+        detections = list(self.detection_history)
+        
+        colors = ['red' if det else 'blue' for det in detections]
+        plt.scatter(range(len(errors)), errors, c=colors, alpha=0.7)
+        plt.axhline(self.threshold, color='black', linestyle='--', label='Threshold')
+        plt.xlabel('Sample Index')
+        plt.ylabel('Reconstruction Error')
+        plt.title('Recent Detection History')
+        plt.legend()
+        
+        plt.subplot(1, 2, 2)
+        anomaly_positions = [i for i, det in enumerate(detections) if det]
+        plt.bar(range(len(detections)), [1 if det else 0 for det in detections], 
+                color=['red' if det else 'blue' for det in detections], alpha=0.7)
+        plt.xlabel('Sample Index')
+        plt.ylabel('Anomaly Detected')
+        plt.title('Anomaly Detection Timeline')
+        
+        plt.tight_layout()
+        plt.savefig('realtime_detection_history.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+# Load test data for simulation
+X_test = np.load('X_test.npy')
+y_test = np.load('y_test.npy')
+
+# Load original scaler to inverse transform for display
+with open('scaler.pkl', 'rb') as f:
+    scaler = pickle.load(f)
+
+X_test_original = scaler.inverse_transform(X_test)
+
+# Create detector and run simulation
+detector = RealTimeAnomalyDetector()
+
+print("Real-time Anomaly Detection Simulation")
+print("=" * 50)
+
+# Run simulation on first 100 samples
+sample_size = min(100, len(X_test_original))
+anomaly_count, total_count = detector.simulate_realtime_detection(
+    X_test_original[:sample_size], 
+    y_test[:sample_size], 
+    delay=0.05  # Faster for demo
+)
+
+print(f"\nFinal Results:")
+print(f"Total samples processed: {total_count}")
+print(f"Anomalies detected: {anomaly_count}")
+print(f"Detection rate: {(anomaly_count/total_count)*100:.1f}%")
+
+# Plot detection history
+detector.plot_detection_history()
+python3 realtime_detection.py
+Subtask 3.3: Generate Detection Report
+Create a comprehensive report generator:
+
+# generate_report.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+import json
+
+class AnomalyDetectionReport:
+    def __init__(self):
+        self.report_data = {}
+        
+    def generate_comprehensive_report(self):
+        """Generate a comprehensive anomaly detection report"""
+        
+        # Load results
+        X_test = np.load('X_test.npy')
+        y_test = np.load('y_test.npy')
+        
+        # Load model and make predictions
+        import tensorflow as tf
+        import pickle
+        
+        model = tf.keras.models.load_model('anomaly_autoencoder.h5')
+        with open('threshold.pkl', 'rb') as f:
+            threshold = pickle.load(f)
+        
+        predictions = model.predict(X_test)
+        mse = np.mean(np.power(X_test - predictions, 2), axis=1)
+        y_pred = (mse > threshold).astype(int)
+        
+        # Calculate metrics
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        
+        # Generate report
+        report = f"""
+# Encrypted Traffic Anomaly Detection Report
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Executive Summary
+This report presents the results of anomaly detection in encrypted network traffic using autoencoder neural networks.
+
+## Dataset Overview
+- Total samples analyzed: {len(X_test)}
+- Normal traffic samples: {len(y_test[y_test==0])}
+- Anomalous traffic samples: {len(y_test[y_test==1])}
+- Features analyzed: 5 (packet_size, inter_arrival_time, flow_duration, bytes_per_second, entropy)
+
+## Model Performance
+- **Accuracy**: {accuracy:.3f}
+- **Precision**: {precision:.3f}
+- **Recall**: {recall:.3f}
+- **F1-Score**: {f1:.3f}
+- **Detection Threshold**: {threshold:.6f}
+
+## Key Findings
+
+### 1. Normal Traffic Characteristics
+- Average packet size: {np.mean(X_test[y_test==0][:, 0]):.2f} bytes
+- Typical inter-arrival time: {np.mean(X_test[y_test==0][:, 1]):.4f} seconds
+- Standard flow duration: {np.mean(X_test[y_test==0][:, 2]):.2f} seconds
+
+### 2. Anomalous Traffic Patterns
+- Unusual packet sizes detected
+- Irregular timing patterns identified
+- Abnormal flow durations observed
+
+### 3. Detection Effectiveness
+- Successfully identified {np.sum(y_pred[y_test==1])}/{np.sum(y_test)} actual anomalies
+- False positive rate: {np.sum(y_pred[y_test==0])}/{len(y_test[y_test==0]):.3f}
+
+## Recommendations
+
+1. **Threshold Tuning**: Consider adjusting the detection threshold based on operational requirements
+2. **Feature Enhancement**: Add additional traffic features for improved detection accuracy
+3. **Model Updates**: Retrain the model periodically with new traffic patterns
+4. **Integration**: Deploy the model in network monitoring systems for real-time detection
+
+## Technical Details
+
+### Autoencoder Architecture
+- Input Layer: 5 features
+- Encoder: 32 → 16 → 8 neurons
+- Decoder: 8 → 16 → 32 → 5 neurons
+- Activation: ReLU (hidden), Linear (output)
+- Loss Function: Mean Squared Error
+
+### Training Configuration
+- Training samples: Normal traffic only
+- Validation split: 20%
+- Batch size: 32
+- Early stopping: Enabled
+
+## Conclusion
+The autoencoder-based anomaly detection system demonstrates effective capability in identifying unusual patterns in encrypted network traffic. The model achieves a good balance between detection accuracy and false positive rates, making it suitable for deployment in cybersecurity monitoring systems.
+        """
+        
+        # Save report
+        with open('anomaly_detection_report.md', 'w') as f:
+            f.write(report)
+        
+        # Save metrics as JSON
+        metrics = {
+            'accuracy': float(accuracy),
+            'precision': float(precision),
+            'recall': float(recall),
+            'f1_score': float(f1),
+            'threshold': float(threshold),
+            'total_samples': int(len(X_test)),
+            'normal_samples': int(len(y_test[y_test==0])),
+            'anomaly_samples': int(len(y_test[y_test==1])),
+            'report_date': datetime.now().isoformat()
+        }
+        
+        with open('detection_metrics.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+        
+        print("Comprehensive report generated:")
+        print("- anomaly_detection_report.md")
+        print("- detection_metrics.json")
+        
+        return metrics
+
+# Generate the report
+reporter = AnomalyDetectionReport()
+metrics = reporter.generate_comprehensive_report()
+
+print("\nReport Summary:")
+for key, value in metrics.items():
+    if key != 'report_date':
+        print(f"{key}: {value}")
+python3 generate_report.py
+Verification and Testing
+Verify all components are working correctly:
+
+# Check generated files
+ls -la *.csv *.npy *.pkl *.h5 *.png *.md *.json
+
+# Display final metrics
+cat detection_metrics.json
+
+# View report summary
+head -20 anomaly_detection_report.md
+Conclusion
+In this lab, you successfully implemented an autoencoder-based anomaly detection system for encrypted network traffic. You accomplished:
+
+Data Generation: Created realistic encrypted traffic datasets with normal and anomalous patterns
+Model Implementation: Built and trained a deep autoencoder neural network for unsupervised anomaly detection
+Pattern Recognition: Identified unusual communication behaviors in encrypted channels without decrypting the traffic
+Performance Evaluation: Assessed the model's effectiveness using standard machine learning metrics
+Real-time Simulation: Demonstrated practical deployment scenarios for continuous monitoring
+This approach is valuable in cybersecurity because it can detect malicious activities in encrypted communications without compromising privacy or requiring decryption keys. The autoencoder learns normal traffic patterns and flags deviations, making it effective against data exfiltration, command-and-control communications, and covert channels that use encryption to hide their activities.
+
+The techniques learned here are directly applicable to network security monitoring, threat detection systems, and compliance monitoring in enterprise environments where encrypted traffic analysis is crucial for maintaining security posture.
