@@ -51,3 +51,34 @@ input_shape = (X_train.shape[1], X_train.shape[2])
 model = build_lstm_model(input_shape)
 
 print("\nModel architecture:")
+
+
+# Define callbacks
+callbacks = [
+    EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        restore_best_weights=True
+    ),
+    ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        min_lr=0.0001
+    )
+]
+
+# Train model
+print("\nTraining LSTM model...")
+history = model.fit(
+    X_train, y_train,
+    batch_size=32,
+    epochs=50,
+    validation_split=0.2,
+    callbacks=callbacks,
+    verbose=1
+)
+
+# Save trained model
+model.save('data/lstm_tls_anomaly_model.h5')
+print("\nModel saved successfully!")
