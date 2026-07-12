@@ -1,0 +1,8 @@
+timestamp,event_id,source,message,user,host
+2024-01-15T08:30:15Z,4624,Security,"Successful logon",admin,workstation01
+2024-01-15T08:31:22Z,4625,Security,"Failed logon attempt",guest,workstation01
+2024-01-15T08:32:45Z,4648,Security,"Logon with explicit credentials",admin,workstation01
+2024-01-15T08:35:12Z,4672,Security,"Special privileges assigned",admin,workstation01
+2024-01-15T09:15:33Z,4688,Security,"Process creation: powershell.exe",admin,workstation01
+2024-01-15T09:16:45Z,4688,Security,"Process creation: cmd.exe",admin,workstation01
+2024-01-15T09:17:22Z,5156,Security,"Network connection allowed",system,workstation01
