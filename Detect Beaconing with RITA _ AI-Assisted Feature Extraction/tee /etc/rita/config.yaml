@@ -1,0 +1,29 @@
+MongoDB:
+    ConnectionString: mongodb://localhost:27017
+    AuthenticationMechanism: ""
+    SocketTimeout: 2
+    TLS:
+        Enable: false
+        VerifyCertificate: false
+        CAFile: ""
+
+LogLevel: 2
+LogPath: /var/lib/rita/logs
+
+Rolling:
+    DefaultChunks: 24
+    
+Filtering:
+    AlwaysInclude: []
+    NeverInclude: ["224.0.0.0/4", "255.255.255.255/32"]
+    InternalSubnets: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+Beacon:
+    DefaultConnectionThresh: 20
+    
+DNS:
+    DefaultConnectionThresh: 10
+
+Blacklisted:
+    feodotracker.abuse.ch: true
+    malwaredomainlist.com: true
