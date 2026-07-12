@@ -1,0 +1,96 @@
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import LabelEncoder
+import json
+from datetime import datetime
+
+class SecurityAnomalyDetector:
+    def __init__(self):
+        self.model = IsolationForest(contamination=0.1, random_state=42)
+        self.encoders = {}
+    
+    def preprocess_data(self, df):
+        """Preprocess security log data for ML analysis"""
+        # Convert timestamp to hour of day
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['hour'] = df['timestamp'].dt.hour
+        df['day_of_week'] = df['timestamp'].dt.dayofweek
+        
+        # Encode categorical variables
+        categorical_cols = ['source', 'user', 'host']
+        for col in categorical_cols:
+            if col in df.columns:
+                if col not in self.encoders:
+                    self.encoders[col] = LabelEncoder()
+                    df[f'{col}_encoded'] = self.encoders[col].fit_transform(df[col].astype(str))
+                else:
+                    df[f'{col}_encoded'] = self.encoders[col].transform(df[col].astype(str))
+        
+        return df
+    
+    def detect_anomalies(self, data_file):
+        """Detect anomalies in security logs"""
+        df = pd.read_csv(data_file)
+        df = self.preprocess_data(df)
+        
+        # Select features for anomaly detection
+        feature_cols = ['hour', 'day_of_week']
+        if 'event_id' in df.columns:
+            feature_cols.append('event_id')
+        
+        # Add encoded categorical features
+        for col in df.columns:
+            if col.endswith('_encoded'):
+                feature_cols.append(col)
+        
+        X = df[feature_cols].fillna(0)
+        
+        # Fit model and predict anomalies
+        anomalies = self.model.fit_predict(X)
+        df['anomaly'] = anomalies
+        df['anomaly_score'] = self.model.decision_function(X)
+        
+        # Return anomalous events
+        anomalous_events = df[df['anomaly'] == -1].copy()
+        return anomalous_events
+    
+    def generate_report(self, anomalies):
+        """Generate anomaly detection report"""
+        report = {
+            'total_anomalies': len(anomalies),
+            'anomaly_types': {},
+            'high_risk_events': []
+        }
+        
+        if len(anomalies) > 0:
+            # Group by event type
+            if 'event_id' in anomalies.columns:
+                report['anomaly_types'] = anomalies['event_id'].value_counts().to_dict()
+            
+            # Identify high-risk events (lowest anomaly scores)
+            high_risk = anomalies.nsmallest(5, 'anomaly_score')
+            report['high_risk_events'] = high_risk[['timestamp', 'message', 'anomaly_score']].to_dict('records')
+        
+        return report
+
+if __name__ == "__main__":
+    detector = SecurityAnomalyDetector()
+    
+    # Analyze Windows security logs
+    print("Analyzing Windows Security Logs...")
+    win_anomalies = detector.detect_anomalies('/home/ubuntu/security_logs/windows_security.csv')
+    win_report = detector.generate_report(win_anomalies)
+    
+    print(f"Windows Security Anomalies: {win_report['total_anomalies']}")
+    print("High Risk Events:")
+    for event in win_report['high_risk_events']:
+        print(f"  - {event['timestamp']}: {event['message']} (Score: {event['anomaly_score']:.3f})")
+    
+    # Save results
+    win_anomalies.to_csv('windows_anomalies.csv', index=False)
+    
+    with open('anomaly_report.json', 'w') as f:
+        json.dump(win_report, f, indent=2, default=str)
+    
+    print("\nResults saved to windows_anomalies.csv and anomaly_report.json")
